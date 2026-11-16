@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError } from "../../../../../packages/api-client/src/client";
 import type { components } from "../../../../../packages/api-client/src/generated";
 
@@ -7,7 +7,7 @@ type Login = components["schemas"]["LoginInput"];
 type Register = components["schemas"]["RegisterInput"];
 export type AuthApi = { session: () => Promise<Session>; login: (body: Login) => Promise<Session>; register: (body: Register) => Promise<Session> };
 
-export function AuthApp({ api }: { api: AuthApi }) {
+export function AuthApp({ api, renderTenant }: { api: AuthApi; renderTenant?: (session: components["schemas"]["TenantStaffSession"]) => ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
   const [registering, setRegistering] = useState(false);
@@ -44,7 +44,7 @@ export function AuthApp({ api }: { api: AuthApi }) {
     {session.scope === "tenant" && <li>Обращения</li>}
     {session.scope === "tenant" && session.role === "admin" && <li>Настройки компании</li>}
     {session.scope === "platform" && <li>Управление платформой</li>}
-  </ul></nav></>;
+  </ul></nav>{session.scope === "tenant" && renderTenant?.(session)}</>;
   return <section><h2>{registering ? "Регистрация компании" : "Вход"}</h2>
     {error && <p role="alert">{error}</p>}
     <form onSubmit={submit}>

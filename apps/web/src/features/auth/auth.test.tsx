@@ -68,4 +68,13 @@ describe("authentication", () => {
     await waitFor(() => expect(login).toHaveBeenCalledWith({ email: "staff@example.com", password: "password123" }));
     expect(await screen.findByRole("navigation")).toBeTruthy();
   });
+  it("shows the inbox only to a tenant session", async () => {
+    const renderTenant = vi.fn(() => <p>Рабочее место</p>);
+    const first = render(<AuthApp api={api(vi.fn().mockResolvedValue(platform))} renderTenant={renderTenant} />);
+    await screen.findByText("Управление платформой");
+    expect(renderTenant).not.toHaveBeenCalled();
+    first.unmount();
+    render(<AuthApp api={api(vi.fn().mockResolvedValue(specialist))} renderTenant={renderTenant} />);
+    expect(await screen.findByText("Рабочее место")).toBeTruthy();
+  });
 });
