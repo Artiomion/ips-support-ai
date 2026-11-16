@@ -1,17 +1,28 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from ips.core.config import Settings
 from ips.core.errors import install_error_handlers
+from ips.platform.router import router as auth_router
 
 
 def create_app(settings: Settings | None = None, ports: object = None) -> FastAPI:
     settings = settings or Settings()
     app = FastAPI(title="IPS Support API")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[settings.web_origin],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "X-CSRF-Token"],
+    )
     install_error_handlers(app)
     app.state.ports = ports
+    app.state.settings = settings
+    app.include_router(auth_router)
     engine = create_engine(
         settings.database_url, pool_pre_ping=True, connect_args={"connect_timeout": 2}
     )
