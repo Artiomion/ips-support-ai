@@ -31,11 +31,16 @@ def _resolve(value: Any, document: dict[str, Any], seen: frozenset[str] = frozen
         "x-phase",
         "x-task",
     }
-    return {
+    result = {
         key: _resolve(item, document, seen)
         for key, item in sorted(value.items())
         if key not in ignored
     }
+    if "const" in result:
+        result["enum"] = [result.pop("const")]
+    if isinstance(result.get("required"), list):
+        result["required"] = sorted(result["required"])
+    return result
 
 
 def _operations(document: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -61,6 +66,8 @@ def compare_contracts(
         wanted = planned[key]
         if operation.get("operationId") != wanted.get("operationId"):
             errors.append(f"{label}: operationId differs")
+        if operation.get("security", []) != wanted.get("security", []):
+            errors.append(f"{label}: security differs")
         for section in ("parameters", "requestBody"):
             if _resolve(operation.get(section), actual) != _resolve(wanted.get(section), expected):
                 errors.append(f"{label}: request {section} differs")

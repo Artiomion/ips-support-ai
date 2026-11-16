@@ -14,3 +14,8 @@ web/widget и SMTP sandbox; worker того же приложения появи
 и `uv run uvicorn ips.main:app --reload`. Проверки: `/health/live` и
 `/health/ready` на `http://localhost:8000`. Для локальных данных используется
 Docker volume; остановка `docker compose -f infra/compose.yaml stop` его не удаляет.
+
+Для входа персонала `WEB_ORIGIN` должен точно совпадать с origin панели.
+Переменная `SESSION_SECRET` используется для CSRF-токенов; задавайте случайное
+значение отдельно в каждом окружении, не добавляя его в Git. В `production`
+нужны `COOKIE_SECURE=true` и отдельный секрет длиной не менее 32 символов.
