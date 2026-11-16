@@ -2,7 +2,7 @@ import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createApiClient } from "../../../packages/api-client/src/client";
 import type { components } from "../../../packages/api-client/src/generated";
-import { acceptInit, isInitMessage, isTrustedMessage } from "./bridge";
+import { acceptInit, handleEscape, isInitMessage, isTrustedMessage } from "./bridge";
 import { Chat } from "./features/chat/Chat";
 
 type Active = { token: string; apiOrigin: string; parentOrigin: string; session: components["schemas"]["CurrentPublicSession"] };
@@ -31,9 +31,14 @@ function Widget() {
         setActive(verified); setError(""); setOpen(true);
       }).catch(() => { if (generation === current) { setActive(null); setOpen(false); setError("Не удалось подтвердить сессию чата."); } });
     }
+    function onKeyDown(event: KeyboardEvent) {
+      const parentOrigin = active?.parentOrigin || new URL(window.location.href).searchParams.get("parent_origin");
+      if (parentOrigin && window.parent !== window) handleEscape(event, window.parent, parentOrigin);
+    }
+    window.addEventListener("keydown", onKeyDown);
     window.addEventListener("message", handle);
     window.parent.postMessage({ type: "ips:ready" }, "*");
-    return () => { generation++; window.removeEventListener("message", handle); };
+    return () => { generation++; window.removeEventListener("message", handle); window.removeEventListener("keydown", onKeyDown); };
   }, [active?.parentOrigin]);
   if (error) return <p role="alert">{error}</p>;
   if (!active) return <p role="status">Подключаем чат…</p>;
