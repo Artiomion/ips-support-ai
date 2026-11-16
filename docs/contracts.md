@@ -33,6 +33,8 @@ JS loader работает в контексте сайта компании. О
 session endpoint с браузерным Origin сайта, который сравнивается с точным
 `scheme://host:port` из allowlist; wildcard по умолчанию запрещён.
 `null`/отсутствующий Origin не принимается этим browser endpoint.
+Стандартные порты `:80` для HTTP и `:443` для HTTPS при сохранении убираются,
+чтобы совпадать с форматом [Origin браузера](https://developer.mozilla.org/en-US/docs/Web/API/URL/origin).
 Session сохраняет widget/customer/tenant. CORS возвращает только разрешённый
 origin; статический loader может быть доступен всем.
 
@@ -59,7 +61,11 @@ base64url без padding в поле `key` и `algorithm: HMAC-SHA256`; серв
 
 Для сайта с login его **сервер** подписывает HMAC payload:
 `widget_key, external_id, issued_at, expires_at, nonce` (base64url JSON + HMAC
-SHA-256). Секрет отдельный для каждого widget, никогда не в JS. Максимальный
+SHA-256). `issued_at` и `expires_at` — целые секунды Unix UTC; `nonce` —
+случайная строка длиной 16–128 символов. Сначала JSON в UTF-8 кодируется в
+base64url без padding, затем HMAC-SHA256 вычисляется от ASCII-байтов полученной
+строки, а подпись тоже кодируется в base64url без padding. Итоговый формат:
+`<payload>.<signature>`. Секрет отдельный для каждого widget, никогда не в JS. Максимальный
 TTL 5 минут, nonce одноразовый. API проверяет подпись constant-time, TTL,
 nonce, привязку к widget и только затем связывает customer. Email из identity
 payload не считается подтверждённым. Поддельный Origin вне браузера не даёт

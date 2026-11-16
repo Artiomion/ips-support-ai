@@ -71,3 +71,17 @@ def test_detects_security_scheme_drift():
             {"paths": {"/api/v1/things": {"post": observed}}},
         )
     )
+
+
+def test_empty_required_matches_omitted_required():
+    expected = {
+        "paths": {
+            "/api/v1/things": {
+                "post": operation({"type": "object", "properties": {}, "required": []})
+            }
+        }
+    }
+    actual = {
+        "paths": {"/api/v1/things": {"post": operation({"type": "object", "properties": {}})}}
+    }
+    assert compare_contracts(expected, actual) == []

@@ -39,7 +39,10 @@ def _resolve(value: Any, document: dict[str, Any], seen: frozenset[str] = frozen
     if "const" in result:
         result["enum"] = [result.pop("const")]
     if isinstance(result.get("required"), list):
-        result["required"] = sorted(result["required"])
+        if result["required"]:
+            result["required"] = sorted(result["required"])
+        else:
+            del result["required"]
     return result
 
 

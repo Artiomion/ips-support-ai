@@ -8,6 +8,10 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     web_origin: str = "http://localhost:5173"
+    widget_origin: str = "http://localhost:5174"
+    smtp_host: str = "localhost"
+    smtp_port: int = 1025
+    smtp_from: str = "support@example.invalid"
     cookie_secure: bool = False
     session_secret: str = "development-only-change-me-before-production"
 
