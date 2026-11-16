@@ -15,7 +15,7 @@ tenant-сущности имеют `tenant_id NOT NULL`. У внешних св�
 | widgets | B | tenant_id, name, color, greeting, allowed_origins[], public_key unique, enabled |
 | widget_sections | B | tenant_id, widget_id, section_id; составные FK, общий справочник разделов C |
 | customers | B | tenant_id, external_id nullable, email nullable, email_verified_at; partial unique(tenant,external_id) |
-| customer_sessions | B | tenant_id, customer_id, widget_id, token_hash, expires_at; scope одного widget |
+| customer_sessions | B | tenant_id, customer_id, widget_id, token_hash, site_origin, expires_at, conversation_scope nullable; scope одного widget |
 | customer_links | B | tenant_id, customer_id, conversation_id, token_hash, expiry, consumed_at; продолжение после email verification |
 | conversations | C | tenant_id, widget_id, customer_id, mode `bot\|human`, version, outcome `unconfirmed\|ai_confirmed\|human_confirmed`, last_activity_at |
 | messages | C | tenant_id, conversation_id, seq, kind, author_id, text, client_message_id, sources JSON; unique(conversation,seq), unique(conversation,client_message_id) при not null |
@@ -33,6 +33,10 @@ tenant-сущности имеют `tenant_id NOT NULL`. У внешних св�
 | attachments + imports | C, M5 | tenant_id, owner/conversation, storage_key, MIME, size, state, error; закрытый доступ |
 | knowledge_suggestions | C, M5 | tenant_id, ticket_id, target_article_id nullable, draft_text, state, pii_flags |
 | assistant_messages + ai_complaints | C, M5 | tenant_id, ticket_id/conversation_id, staff_id, text, references; отдельные от client messages |
+
+`conversation_scope` пока всегда NULL: ограниченные одним диалогом токены
+появятся в B07. До их выпуска B/C добавляют tenant-scoped FK на conversations
+и проверку принадлежности диалога клиенту и widget в той же транзакции.
 
 У `tickets`: partial unique `(tenant_id, conversation_id)` WHERE
 `status NOT IN ('resolved','closed')`. Повтор handoff возвращает текущий

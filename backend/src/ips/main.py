@@ -6,7 +6,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ips.core.config import Settings
 from ips.core.errors import install_error_handlers
+from ips.platform.members import router as members_router
 from ips.platform.router import router as auth_router
+from ips.platform.widget_api import public_router, staff_router
+from ips.platform.widget_cors import widget_cors
 
 
 def create_app(settings: Settings | None = None, ports: object = None) -> FastAPI:
@@ -23,6 +26,10 @@ def create_app(settings: Settings | None = None, ports: object = None) -> FastAP
     app.state.ports = ports
     app.state.settings = settings
     app.include_router(auth_router)
+    app.include_router(members_router)
+    app.include_router(staff_router)
+    app.include_router(public_router)
+    app.middleware("http")(widget_cors)
     engine = create_engine(
         settings.database_url, pool_pre_ping=True, connect_args={"connect_timeout": 2}
     )
