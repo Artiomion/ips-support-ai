@@ -1,0 +1,6 @@
+# Заполнить реальными @логинами после выбора ролей в docs/team.json.
+# Не использовать несуществующие placeholder accounts в активных правилах.
+# A: /apps/ /packages/ /tests/e2e/ и frontend workflow.
+# B: /backend/src/ips/core/ /backend/src/ips/platform/ /backend/src/ips/tickets/ /infra/.
+# C: /backend/src/ips/conversations/ /backend/src/ips/ai/ /backend/src/ips/knowledge/.
+# contracts: A + владелец endpoint; Alembic: B + C по изменённому домену.

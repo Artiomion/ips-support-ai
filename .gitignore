@@ -1,0 +1,23 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+node_modules/
+dist/
+build/
+coverage/
+playwright-report/
+test-results/
+output/
+uploads/
+*.log
+.DS_Store
+.agents/skills/
+.ai/local-state.json
+# Lock-файлы uv.lock и package-lock.json ОБЯЗАТЕЛЬНО коммитятся.

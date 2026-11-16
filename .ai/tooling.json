@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-11-16",
+  "source": {
+    "repository": "https://github.com/openai/skills",
+    "commit": "49f948faa9258a0c61caceaf225e179651397431",
+    "archive_url": "https://codeload.github.com/openai/skills/zip/49f948faa9258a0c61caceaf225e179651397431"
+  },
+  "skills": [
+    {
+      "name": "playwright",
+      "path": "skills/.curated/playwright",
+      "default_install": true,
+      "skill_md_blob_sha": "77c01afb31aa602d0b002ae2438c2b67f0335fcb"
+    },
+    {
+      "name": "security-best-practices",
+      "path": "skills/.curated/security-best-practices",
+      "default_install": true,
+      "skill_md_blob_sha": "45ccbd8d671c4c4cc3e7e0645a16a3f80ec50de7"
+    },
+    {
+      "name": "gh-fix-ci",
+      "path": "skills/.curated/gh-fix-ci",
+      "default_install": false,
+      "skill_md_blob_sha": "76bdeb6a7bff93cbe924c0652f1fd7a3c3ffc46c"
+    },
+    {
+      "name": "gh-address-comments",
+      "path": "skills/.curated/gh-address-comments",
+      "default_install": false,
+      "skill_md_blob_sha": "0ee19e080dc9f0b082157080d1e65511ddc49e7e"
+    }
+  ],
+  "plugins": [
+    {
+      "name": "GitHub",
+      "id": "plugin_connector_1p_1a69035c238881919c4190932b2df699",
+      "checked_status": "enabled_for_preparing_user",
+      "required": false,
+      "fallback": "git + gh, individual authentication"
+    },
+    {
+      "name": "Context7",
+      "id": "plugin_asdk_app_69ef18c674308191a2f952431f91ea61",
+      "checked_status": "enabled_for_preparing_user",
+      "required": false,
+      "fallback": "official framework documentation"
+    }
+  ]
+}

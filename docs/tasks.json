@@ -1,0 +1,538 @@
+[
+  {
+    "id": "A01",
+    "owner": "A",
+    "title": "Каркас web/widget и общий UI",
+    "phase": "M0",
+    "points": 3,
+    "status": "todo",
+    "files": [
+      "package.json",
+      "package-lock.json",
+      "apps/web/{package.json,src/main.tsx,src/App.tsx}",
+      "apps/widget/{package.json,src/main.tsx}",
+      ".github/workflows/frontend.yml"
+    ],
+    "inputs": "Нет; структура и contracts/openapi.json уже доступны.",
+    "output": "Два запускаемых Vite приложения; npm workspaces apps/* и packages/*; scripts dev:web, dev:widget, test, typecheck, lint, build.",
+    "acceptance": "apps/web/src/App.test.tsx::renders_app_shell: выводится оболочка; build обоих приложений успешен. Без backend и login mock в bundle production.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/1",
+    "issue_number": 1
+  },
+  {
+    "id": "A02",
+    "owner": "A",
+    "title": "Типизированный клиент, MSW и контрактные фикстуры",
+    "phase": "M0",
+    "points": 5,
+    "status": "todo",
+    "files": [
+      "packages/api-client/{package.json,src/generated.ts,src/client.ts}",
+      "apps/web/src/mocks/",
+      "apps/widget/src/mocks/",
+      "contracts/examples/"
+    ],
+    "inputs": "A01; OpenAPI. Не ждёт B01/C01.",
+    "output": "createApiClient({baseUrl,csrfToken?,customerToken?}); get/post/put/patch обёртки с типами; npm run api:generate и api:check; сценарии bot, waiting, human, timeout.",
+    "acceptance": "packages/api-client/src/client.test.ts: 401 не превращается в успех; CSRF только staff mutations; bearer не уходит на чужой origin; MSW public-message без internal_note; api:check выявляет drift.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/2",
+    "issue_number": 2
+  },
+  {
+    "id": "A03",
+    "owner": "A",
+    "title": "Регистрация, вход, оболочки ролей",
+    "phase": "M1",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "apps/web/src/features/auth/",
+      "apps/web/src/routes.tsx"
+    ],
+    "inputs": "A02; register/login/getStaffSession. На MSW до B02.",
+    "output": "Экраны регистрации/входа, сохранение CSRF в памяти; разные меню admin/specialist/superadmin.",
+    "acceptance": "auth.test.tsx: 401 возвращает форму; specialist не видит admin controls; пользователь не считается вошедшим до ответа API; логин с keyboard.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/3",
+    "issue_number": 3
+  },
+  {
+    "id": "A04",
+    "owner": "A",
+    "title": "Встраиваемый виджет и история диалогов",
+    "phase": "M1",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "apps/widget/src/{loader.ts,bridge.ts,features/history/,features/chat/}",
+      "apps/widget/demo/index.html"
+    ],
+    "inputs": "A02; createPublicSession, listCustomerConversations, createConversation, listCustomerMessages/sendCustomerMessage.",
+    "output": "Loader и iframe; восстановление через getPublicSession по сохранённому bearer; при 401 новый anonymous session с очисткой старого token; новая проблема — новый conversation; polling 3 s и остановка при закрытии.",
+    "acceptance": "widget.test.ts: чужой postMessage отвергнут; два виджета не делят token; при закрытии polling останавливается; недоступный localStorage даёт memory mode; repeated submit не дублирует сообщение.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/4",
+    "issue_number": 4
+  },
+  {
+    "id": "A05",
+    "owner": "A",
+    "title": "Рабочее место специалиста",
+    "phase": "M2",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "apps/web/src/features/inbox/"
+    ],
+    "inputs": "A03; tickets, staff messages, claim/update. На MSW до B04/C05.",
+    "output": "Очередь с фильтрами, диалог, note composer, версии ticket, состояния загрузки/пусто/ошибка.",
+    "acceptance": "inbox.test.tsx: internal note заметно отличается; 409 обновляет ticket и не затирает чужое назначение; отправка ответа требует действия специалиста.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/5",
+    "issue_number": 5
+  },
+  {
+    "id": "A06",
+    "owner": "A",
+    "title": "Настройки компании, виджеты, база знаний",
+    "phase": "M2",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "apps/web/src/features/{admin/,knowledge/}",
+      "apps/widget/src/accessibility.test.tsx"
+    ],
+    "inputs": "A03; B widgets/members/categories и C articles/sections/revisions/import TXT.",
+    "output": "Формы сотрудников и widgets; embed snippet; CRUD статей и ревизии; TXT импорт с processing/error.",
+    "acceptance": "admin.test.tsx: invalid origin показывает 422; unpublished article имеет видимый badge; stale revision показывает conflict; widget: Tab/Escape/focus return и aria labels работают.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/6",
+    "issue_number": 6
+  },
+  {
+    "id": "A07",
+    "owner": "A",
+    "title": "Email, передача человеку, решение и оценки",
+    "phase": "M3",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "apps/widget/src/features/{handoff/,continuation/,resolution/}",
+      "apps/web/src/features/inbox/"
+    ],
+    "inputs": "A04/A05; handoff/getCustomerTicket polling, confirm/reopen/rating, email request/confirm/exchange.",
+    "output": "Клиент просит специалиста без ИИ; защищённая ссылка, очистка fragment; подтверждение результата и повторное открытие.",
+    "acceptance": "handoff.test.tsx: AI 503 не блокирует кнопку; ожидание видно; link token не остаётся в URL; score 0/6 не отправляется; решённая заявка подтверждается только явным действием.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/7",
+    "issue_number": 7
+  },
+  {
+    "id": "A08",
+    "owner": "A",
+    "title": "Сквозная интеграция и демонстрация ядра",
+    "phase": "M4",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "tests/e2e/{core.spec.ts,tenants.spec.ts}",
+      "apps/web/src/features/analytics/",
+      "docs/demo.md"
+    ],
+    "inputs": "A01–A07; реальные B/C endpoint M0–M3. До них тесты пишутся на заданных fixtures.",
+    "output": "Обзор метрик + сценарий защиты на двух tenants; Playwright использует реальный backend и fake LLM, не MSW.",
+    "acceptance": "core.spec.ts: bot answer→handoff→claim→staff reply→confirm; tenants.spec.ts: другой tenant не читает dialogue; fake виден; два origins и mobile viewport. npm run test:e2e проходит.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/8",
+    "issue_number": 8
+  },
+  {
+    "id": "A09",
+    "owner": "A",
+    "title": "UI интеллектуального расширения",
+    "phase": "M5",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "apps/web/src/features/{assistant/,knowledge-suggestions/}",
+      "apps/widget/src/features/attachments/",
+      "apps/web/src/features/knowledge/"
+    ],
+    "inputs": "A08; C09/C10 M5 contracts; сначала MSW.",
+    "output": "PDF/DOCX import, image upload, staff assistant, preview approve/reject suggestion; неподдерживаемые функции спрятаны по capabilities.",
+    "acceptance": "assistant.test.tsx: draft не отправляется клиенту автоматически; dangerous suggestion нельзя опубликовать без confirm; image errors и import failure видимы.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/9",
+    "issue_number": 9
+  },
+  {
+    "id": "A10",
+    "owner": "A",
+    "title": "Расширенные отчёты и управление",
+    "phase": "M5",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "apps/web/src/features/{analytics/,platform/}",
+      "tests/e2e/extensions.spec.ts"
+    ],
+    "inputs": "A08; B09/B10 и C10; сначала MSW.",
+    "output": "SLA summary, incident candidates, tenant usage/limits, complaint review; финальный e2e расширения.",
+    "acceptance": "extensions.spec.ts: нулевые знаменатели отображаются как отсутствие данных; superadmin видит агрегаты без переписок; все dashboard числа получены из API.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/10",
+    "issue_number": 10
+  },
+  {
+    "id": "B01",
+    "owner": "B",
+    "title": "Backend, инфраструктура, базовая схема и порты",
+    "phase": "M0",
+    "points": 3,
+    "status": "todo",
+    "files": [
+      "backend/{pyproject.toml,uv.lock,.python-version,src/ips/main.py,src/ips/core/,alembic/}",
+      "infra/compose.yaml",
+      ".github/workflows/backend.yml"
+    ],
+    "inputs": "Нет. Контракты в репозитории. C01 делает свои файлы независимо.",
+    "output": "create_app(settings, ports); Session dependency; базовая миграция b0001; /health/live, /health/ready; config, errors, ports; core.jobs enqueue/drain_once с idempotency key для ранних писем; export/compare OpenAPI. Документировать команды в verification.",
+    "acceptance": "tests/core/test_bootstrap.py: health live=200, ready при DB down=503; alembic upgrade head на пустой PostgreSQL; безопасная ошибка без stacktrace. CI uv sync --frozen и PostgreSQL, а не SQLite.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/11",
+    "issue_number": 11
+  },
+  {
+    "id": "B02",
+    "owner": "B",
+    "title": "Компании, пользователи, роли и staff sessions",
+    "phase": "M0",
+    "points": 5,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/platform/{models.py,auth.py,schemas.py,router.py}",
+      "backend/tests/platform/test_auth.py",
+      "backend/alembic/versions/b_*"
+    ],
+    "inputs": "B01; StaffSession/OpenAPI. C02 может использовать fake contexts до merge.",
+    "output": "Register/login/logout/me; Argon2; token hashes; TenantContext guard; csrf+Origin; StaffSession union по scope tenant/platform, superadmin без tenant membership и без доступа к данным компаний.",
+    "acceptance": "test_auth.py: пароль не plain; неверная роль=403; tenant подмена=404; logout отзывает token; login/register origin validation; superadmin не проходит staff tenant guard; два tenants.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/12",
+    "issue_number": 12
+  },
+  {
+    "id": "B03",
+    "owner": "B",
+    "title": "Сотрудники, виджеты и customer identity",
+    "phase": "M1",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/platform/{members.py,widgets.py,customers.py,identity.py}",
+      "backend/tests/platform/test_identity.py",
+      "backend/alembic/versions/b_*"
+    ],
+    "inputs": "B02; createPublicSession/getPublicSession, Member/Widget DTO. Сначала widgets без section bindings; после C03 отдельная миграция связей widget_sections, без блокировки остальных операций.",
+    "output": "Invites и SMTP adapter через jobs.enqueue/drain_once B01; members/categories; widgets/domains; anon bearer; HMAC confirmed identity; GET session metadata. Для section_ids до C03 используется пустой список; общий gate M2 требует реальные связи.",
+    "acceptance": "test_identity.py: HMAC TTL 5min и nonce replay; spoofed external_id не принимается; host suffix attack отвергнут; разные widgets/tenants изолированы; public key не позволяет получить старую историю.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/13",
+    "issue_number": 13
+  },
+  {
+    "id": "B04",
+    "owner": "B",
+    "title": "Заявки, handoff и статусы",
+    "phase": "M1",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/tickets/{models.py,schemas.py,service.py,router.py}",
+      "backend/tests/tickets/test_transitions.py",
+      "backend/alembic/versions/b_*"
+    ],
+    "inputs": "B02; TicketPort, fake ConversationPort; настоящая C реализация подключается позже.",
+    "output": "TicketPort.escalate/on_customer_message/has_active/record_staff_reply; list/get/update/confirm/reopen и getCustomerTicket; статусы по contracts; version checks; mode=human в общей транзакции.",
+    "acceptance": "test_transitions.py: повтор handoff один active ticket; illegal transition=409; чужой conversation=404; reopen resolved не создаёт второй active; closed handoff создаёт новый ticket; internal note не идёт в public DTO.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/14",
+    "issue_number": 14
+  },
+  {
+    "id": "B05",
+    "owner": "B",
+    "title": "Атомарное назначение и простая маршрутизация",
+    "phase": "M2",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/tickets/{assignment.py,routing.py}",
+      "backend/tests/tickets/test_concurrency.py"
+    ],
+    "inputs": "B03/B04; availability, categories, max_active.",
+    "output": "Claim, reassignment admin/assignee; выбор доступного по специализации и минимальной нагрузке; без кандидата очередь.",
+    "acceptance": "test_concurrency.py на двух независимых PostgreSQL connections: два claim — один успех/один 409; два tickets при max_active=1 не назначаются одному; недоступного не выбирает; порядок locks стабилен.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/15",
+    "issue_number": 15
+  },
+  {
+    "id": "B06",
+    "owner": "B",
+    "title": "Операционные настройки, audit и квоты",
+    "phase": "M2",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/core/{usage.py,rate_limit.py}",
+      "backend/src/ips/platform/{settings.py,audit.py}",
+      "backend/tests/platform/test_limits.py"
+    ],
+    "inputs": "B02; UsageBudget port C04, OrganizationSettings.",
+    "output": "Серверные лимиты staff/widgets/AI; atomic reserve/settle; audit важных действий без текста/private tokens; HTTP spam limiter; getStaffCapabilities/getCustomerCapabilities из реально подключённых функций, не из роли UI.",
+    "acceptance": "test_limits.py: два reserve на последний слот — один проходит; failure освобождает резерв по правилу; повтор settle не удваивает; expired reservation подбирается; audit не содержит ключ/пароль/письмо.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/16",
+    "issue_number": 16
+  },
+  {
+    "id": "B07",
+    "owner": "B",
+    "title": "Email continuation, ratings и базовая аналитика",
+    "phase": "M3",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/platform/{email_links.py,notifications.py}",
+      "backend/src/ips/tickets/{ratings.py,analytics.py}",
+      "backend/tests/platform/test_links.py"
+    ],
+    "inputs": "B03/B04; ConversationPort scope и metrics; StaffReplyEvent/NotificationPort; C07 outcome counters; SMTP sandbox.",
+    "output": "Request/confirm/exchange одноразовых ссылок; NotificationPort.enqueue_staff_reply в транзакции сообщения и idempotent SMTP job; rating; widget-filtered overview. В ядре jobs можно исполнять drain_once, постоянный worker в B09.",
+    "acceptance": "test_links.py: token hash+30min TTL, второй exchange отклонён, link scope не даёт другой conversation; score 1..5; metrics считают ai_confirmed только по подтверждению; нулевой знаменатель безопасен.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/17",
+    "issue_number": 17
+  },
+  {
+    "id": "B08",
+    "owner": "B",
+    "title": "Интеграция backend и воспроизводимый запуск",
+    "phase": "M4",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "infra/{compose.yaml,Dockerfile.api,README.md}",
+      "backend/tests/integration/",
+      "docs/runbook.md",
+      ".github/workflows/backend.yml"
+    ],
+    "inputs": "B01–B07 и интерфейсы C02–C07. Не ждёт C08 или A08: стенд нужен для их тестов; приёмка всех трёх вместе — gate M4.",
+    "output": "Composition root связывает порты; один Alembic head; seed двух companies; команды поднять/сбросить тестовый стенд; backup/restore smoke.",
+    "acceptance": "tests/integration/test_core.py: реальный handoff меняет mode и ticket атомарно; API restart сохраняет данные; fresh migration+upgrade с M3; backup восстанавливает обе компании. Все backend quality gates проходят.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/18",
+    "issue_number": 18
+  },
+  {
+    "id": "B09",
+    "owner": "B",
+    "title": "SLA, jobs, авто-закрытие и retention",
+    "phase": "M5",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/core/{worker.py,jobs.py}",
+      "backend/src/ips/tickets/{sla.py,auto_close.py}",
+      "backend/src/ips/platform/retention.py",
+      "backend/tests/jobs/"
+    ],
+    "inputs": "B08; persisted jobs из B07; injected clock, UTC.",
+    "output": "Постоянный DB-backed worker поверх enqueue/drain_once B01 с lease/retry/idempotency; get/updateSupportPolicy с IANA timezone и weekly windows; SLA; авто-close resolved; retention.",
+    "acceptance": "tests/jobs/test_worker.py: два workers не выполняют одну lease; crash/retry не дублирует email; auto-close только после срока; retention удаляет attachments/knowledge links безопасно и tenant-scoped; DST проверяется через timezone conversion.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/19",
+    "issue_number": 19
+  },
+  {
+    "id": "B10",
+    "owner": "B",
+    "title": "Платформенные лимиты, SLA analytics, инциденты",
+    "phase": "M5",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/platform/{superadmin.py,plans.py}",
+      "backend/src/ips/tickets/{incidents.py,analytics.py}",
+      "backend/tests/platform/test_superadmin.py"
+    ],
+    "inputs": "B08/B09; platform/limits/SLA/incident contracts. Не зависит от C10; complaint UI читает C endpoint независимо.",
+    "output": "Агрегаты платформы; лимиты тарифов без оплаты; SLA overview; candidate incidents по повторяющейся категории/временному окну (heuristic, без обещания ML).",
+    "acceptance": "test_superadmin.py: superadmin видит counts и не messages; admin своей компании не управляет другой; max_staff/widgets нельзя обойти параллельными create; incidents scoped to tenant.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/20",
+    "issue_number": 20
+  },
+  {
+    "id": "C01",
+    "owner": "C",
+    "title": "DTO доменов и детерминированные адаптеры",
+    "phase": "M0",
+    "points": 3,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/{conversations/schemas.py,knowledge/schemas.py,ai/provider.py,ai/fake.py}",
+      "backend/tests/ai/test_fake.py"
+    ],
+    "inputs": "Нет runtime-зависимости на B01. Контракты и утверждённые порты.",
+    "output": "AnswerInput/AnswerResult; FakeLLMProvider.answer; fake TicketPort/UsageBudget в tests; список моделей для metadata. Согласовать core ports через маленький PR B.",
+    "acceptance": "test_fake.py: одинаковый ввод одинаковый результат, unknown question→needs_human; bad output не проходит Pydantic; fake не делает сетевых вызовов. До B01 uv run --no-project --with pydantic --with pytest python -m pytest -o pythonpath=backend/src backend/tests/ai/test_fake.py.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/21",
+    "issue_number": 21
+  },
+  {
+    "id": "C02",
+    "owner": "C",
+    "title": "Диалоги и идемпотентные сообщения",
+    "phase": "M0",
+    "points": 5,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/conversations/{models.py,repository.py,service.py,router.py}",
+      "backend/tests/conversations/test_messages.py",
+      "backend/alembic/versions/c_*"
+    ],
+    "inputs": "C01; B01 schema b0001 для integration, fake CustomerPrincipal для unit tests.",
+    "output": "Create/list conversations, public/staff messages, seq cursor; ConversationPort.lock_for_handoff/mark_human/add_staff_message; pending ai_run. Исполнение AI run реализует C05; до этого новые сообщения просто сохраняются.",
+    "acceptance": "test_messages.py: разные conversations не смешиваются; повтор client_message_id возвращает одно сообщение, изменённый текст=409; чужой customer=404; public projection никогда не включает internal_note.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/22",
+    "issue_number": 22
+  },
+  {
+    "id": "C03",
+    "owner": "C",
+    "title": "База знаний, ревизии и TXT импорт",
+    "phase": "M1",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/knowledge/{models.py,repository.py,service.py,router.py,imports.py}",
+      "backend/tests/knowledge/test_articles.py",
+      "backend/alembic/versions/c_*"
+    ],
+    "inputs": "C01; TenantContext или fake. Sections создаются самостоятельно, без ожидания B03; B подключает widget bindings отдельной миграцией после C03.",
+    "output": "Sections/articles CRUD, draft/published/disabled, immutable revisions, restore создаёт новую ревизию; bounded TXT import со статусом ready/failed в запросе, без фоновой очереди; лимит 2MiB UTF-8.",
+    "acceptance": "test_articles.py: stale expected_revision=409; restore не перезаписывает историю; internal не идёт клиенту; disabled не участвует в поиске; invalid UTF-8/too large получают стабильную ошибку.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/23",
+    "issue_number": 23
+  },
+  {
+    "id": "C04",
+    "owner": "C",
+    "title": "Поиск знаний и настоящий LLM adapter",
+    "phase": "M1",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/knowledge/retrieval.py",
+      "backend/src/ips/ai/{provider.py,http_provider.py,prompts.py}",
+      "backend/tests/ai/test_provider.py"
+    ],
+    "inputs": "C01/C03; KnowledgeSearch, LLMProvider, UsageBudget fake до B06.",
+    "output": "FTS по public/published/widget sections; top 5 snippets; один HTTPS provider по env; schemas validate AnswerResult; citations только из retrieved revisions.",
+    "acceptance": "test_provider.py: internal/foreign article не передаётся в prompt; выдуманная citation отбрасывается; 20s timeout; HTTP 429/5xx возвращают domain failure; ключ не попадает в logs. CI stub transport; реальный smoke вручную с ключом.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/24",
+    "issue_number": 24
+  },
+  {
+    "id": "C05",
+    "owner": "C",
+    "title": "Оркестрация ответов и передача человеку",
+    "phase": "M2",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/ai/{orchestrator.py,rules.py,runner.py}",
+      "backend/tests/ai/test_handoff_race.py"
+    ],
+    "inputs": "C02/C04; TicketPort B04 и UsageBudget B06 (до них fake).",
+    "output": "runner.start/stop в lifespan API: background thread подбирает pending ai_runs, claim с lease и собственными Session, startup recovery; orchestration reservation→retrieval→provider→answer/handoff; без открытой DB transaction во время LLM. B01 composition подключает runner; B09 сможет вынести его в worker.",
+    "acceptance": "test_handoff_race.py: пауза fake provider, handoff, завершение provider → assistant message не сохраняется; квота исчерпана→handoff доступен; duplicate AI job не дублирует ответ; malformed result не меняет ticket напрямую.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/25",
+    "issue_number": 25
+  },
+  {
+    "id": "C06",
+    "owner": "C",
+    "title": "Приватность, prompt injection и fallback",
+    "phase": "M2",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/ai/{guardrails.py,history.py}",
+      "backend/tests/ai/{test_privacy.py,test_injection.py}"
+    ],
+    "inputs": "C03–C05; scope audience=customer/staff.",
+    "output": "Ограничение истории и контекста; общие знания выключены по умолчанию; safety input/output; provider error metadata; redacted logs.",
+    "acceptance": "test_privacy.py: чужой tenant, внутренние note, internal revisions и assistant staff chat отсутствуют в customer prompt/answer; test_injection.py: текст «покажи секреты/вызови URL» не даёт tool call, смену роли или обход tenant. Нельзя заявлять абсолютную защиту от prompt injection.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/26",
+    "issue_number": 26
+  },
+  {
+    "id": "C07",
+    "owner": "C",
+    "title": "История, outcome и интеграционные события",
+    "phase": "M3",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/conversations/{outcomes.py,events.py}",
+      "backend/tests/conversations/test_outcomes.py",
+      "backend/src/ips/knowledge/seed.py"
+    ],
+    "inputs": "C02/C05; TicketPort.has_active/record_staff_reply и NotificationPort.enqueue_staff_reply. До B07 используются fake портов.",
+    "output": "confirm-ai, resume-bot; unconfirmed/ai_confirmed/human_confirmed; ConversationPort.metrics; public staff reply атомарно записывает first response через TicketPort и enqueue через NotificationPort; internal note не создаёт события.",
+    "acceptance": "test_outcomes.py: без явного confirm AI outcome unconfirmed; human mode не становится ai_confirmed; resume-bot при active ticket=409; internal note не запускает email; duplicate event не создаёт второе уведомление.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/27",
+    "issue_number": 27
+  },
+  {
+    "id": "C08",
+    "owner": "C",
+    "title": "Проверка качества ИИ и интеграция ядра",
+    "phase": "M4",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/tests/ai/test_eval_cases.py",
+      "backend/tests/fixtures/ai-cases.json",
+      "docs/ai-evaluation.md"
+    ],
+    "inputs": "C01–C07 и стенд B08 после его минимального запуска. Не ждёт A08; совместный M4 gate принимает все проверки.",
+    "output": "12 фиксированных сценариев с expected behavior: known, unknown, ambiguity, human request, failed answer, urgency, injection, private, cross-tenant, timeout, quota, race; demo KB двух companies.",
+    "acceptance": "test_eval_cases.py: все 12 детерминированных сценариев проходят; handoff/privacy по assertions, не оценке другой LLM; отдельный ручной отчёт настоящего провайдера с model/date/limitations и без ключей.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/28",
+    "issue_number": 28
+  },
+  {
+    "id": "C09",
+    "owner": "C",
+    "title": "PDF/DOCX, изображения и семантический поиск",
+    "phase": "M5",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/knowledge/{parsers.py,embeddings.py,retrieval.py}",
+      "backend/src/ips/conversations/attachments.py",
+      "backend/tests/knowledge/test_imports.py",
+      "backend/alembic/versions/c_*"
+    ],
+    "inputs": "C08; Attachment/Import DTO; B09 jobs.",
+    "output": "pypdf/python-docx, max 10MiB/100 страниц/1M символов и timeout; images JPEG/PNG/WebP max5MiB/20MP; authorized download; MessageInput.attachment_ids, vision только для provider с такой capability; AnswerInput.images; pgvector exact search с embedding model/dimension; max_knowledge_bytes проверяется при импорте.",
+    "acceptance": "test_imports.py: malformed/oversized files rejected, PII не записывается в public article автоматически; cross-tenant download=404; internal chunk не возвращается даже при лучшей cosine distance; PDF без текста помечен needs_ocr, OCR не обещается.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/29",
+    "issue_number": 29
+  },
+  {
+    "id": "C10",
+    "owner": "C",
+    "title": "Помощник, предложения знаний и жалобы",
+    "phase": "M5",
+    "points": 4,
+    "status": "todo",
+    "files": [
+      "backend/src/ips/ai/assistant.py",
+      "backend/src/ips/knowledge/{suggestions.py,dedup.py}",
+      "backend/src/ips/conversations/complaints.py",
+      "backend/tests/knowledge/test_suggestions.py"
+    ],
+    "inputs": "C08/C09; contracts assistant/suggestions/complaints. Не ждёт B10, который считает агрегаты самостоятельно.",
+    "output": "Отдельный staff assistant с summary/черновиком и internal sources; публикация только действием человека; suggestion по resolved ticket с redaction/dedup; approve/reject; list/get/review complaint с source snapshot. Автопубликация выключена.",
+    "acceptance": "test_suggestions.py: assistant draft не добавляется в customer messages; raw email/телефон удалены и помечены; опасная инструкция pending review; approve создаёт revision; чужой tenant не читает complaint или suggestion. Автопубликация остаётся off.",
+    "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/30",
+    "issue_number": 30
+  }
+]

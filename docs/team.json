@@ -1,0 +1,29 @@
+{
+  "repository": "Artiomion/ips-support-ai",
+  "default_branch": "main",
+  "members": [
+    {
+      "role": "A",
+      "github": null,
+      "focus": "Интерфейсы и клиентский опыт"
+    },
+    {
+      "role": "B",
+      "github": "Artiomion",
+      "focus": "Платформа, заявки и инфраструктура"
+    },
+    {
+      "role": "C",
+      "github": null,
+      "focus": "Диалоги, ИИ и знания"
+    }
+  ],
+  "role_assignment": "B=создатель репозитория — исходное предположение; роли можно поменять до первых PR",
+  "review_ring": {
+    "A": "B",
+    "B": "C",
+    "C": "A"
+  },
+  "points_per_member": 40,
+  "mvp_points_per_member": 32
+}

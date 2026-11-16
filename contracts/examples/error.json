@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "version_conflict",
+    "message": "Заявка уже изменена. Обновите данные.",
+    "request_id": "fixture-request"
+  }
+}
