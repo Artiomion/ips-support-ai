@@ -6,8 +6,9 @@
 [Приватный репозиторий](https://github.com/Artiomion/ips-support-ai) ·
 [30 задач в GitHub](docs/github-issues.md).
 
-**Сейчас подготовлены план, инструкции, контракты и структура. Приложение ещё
-не реализовано.** Python выбран для backend. Репозиторий рассчитан на работу
+**Backend и часть платформенных функций уже реализованы; работа продолжается.**
+Актуальное состояние каждой функции — в GitHub Issues. Python выбран для backend.
+Репозиторий рассчитан на работу
 через небольшие GitHub PR и обычные кодовые модели со средним рассуждением.
 
 Начать: [инструкция участника](docs/start-here.md),
@@ -28,6 +29,7 @@
 - [Архитектура и решения](docs/architecture.md), [модель данных](docs/data-model.md).
 - [HTTP и внутренние интерфейсы](docs/contracts.md), [OpenAPI](contracts/openapi.json).
 - [Что входит в защиту и что отложено](docs/scope.md), [проверки](docs/verification.md).
+- [Подключение настоящих ИИ и почты к демонстрации](docs/demo-live-services.md).
 - [Покрытие требований](docs/requirements.md), [риски и путь к production](docs/risks.md).
 - [GitHub и правила совместной работы](docs/team-workflow.md).
 - [Готовые запросы для моделей](docs/prompts/task.md).

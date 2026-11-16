@@ -7,16 +7,16 @@
 |---|---|---|
 | 1: клиент → ИИ → человек → решение | A04/A05/A07/A08, B04/B05/B08, C05/C07 | Сквозной M4 |
 | 2: организации, роли, самостоятельная регистрация | A03/A06, B02/B03 | Ядро, negative tenant/RBAC tests |
-| 2: приглашения по email | A06, B03 | Ядро, SMTP sandbox; реальный delivery требует SMTP |
+| 2: приглашения по email | A06, B03, B07 | Локально sandbox; к M4 внешняя доставка на согласованный настоящий адрес |
 | 2: суперадмин без свободного доступа к перепискам | B02 + B10/A10 | Guard в ядре, полноценный aggregate UI в M5 |
 | 3: несколько widgets, branding, origins, разделы знаний | A04/A06, B03, C03/C04 | Ядро, exact origin и scope tests |
 | 3: CMS integrations | — | Развитие после M5 |
 | 4: signed user, anonymous, verified email | A04/A07, B03/B07, C02 | Ядро; device persistence при доступном storage |
-| 4: письмо и защищённая ссылка, без inbound email | A07, B07 | Ядро, fragment exchange/replay tests |
+| 4: письмо и защищённая ссылка, без inbound email | A07, B07 | Ядро: fragment exchange/replay tests; к M4 реальная доставка и открытие ссылки |
 | 5: отдельные диалоги, одна активная заявка, статусы | A04/A05, B04, C02 | Ядро, DB unique + transitions |
 | 5: confirm/reopen | A07, B04, C07 | Ядро |
 | 5: автоматическое закрытие по настройке | B09 | M5, injected clock |
-| 6: текст, уточнения, known/unknown, citations, handoff | C04/C05/C06, A04/A07 | Ядро; certainty не трактуется как достоверная вероятность |
+| 6: текст, уточнения, known/unknown, citations, handoff | C04/C05/C06, A04/A07 | Ядро; к M4 обязательна проверка реального AI provider, certainty не трактуется как достоверная вероятность |
 | 6: категории и срочность | C04/C05, B04/B05 | Ядро: предложение ИИ валидируется сервером |
 | 6: изображения и screenshots | C09, A09 | M5, при vision-capable provider |
 | 6: общие знания опциональны, политика не выдумывается | C04/C06, A06 | Ядро: off по умолчанию; no evidence→уточнение/handoff |

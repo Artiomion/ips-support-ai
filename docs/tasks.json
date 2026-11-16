@@ -135,8 +135,8 @@
       "docs/demo.md"
     ],
     "inputs": "A01–A07; реальные B/C endpoint M0–M3. До них тесты пишутся на заданных fixtures.",
-    "output": "Обзор метрик + сценарий защиты на двух tenants; Playwright использует реальный backend и fake LLM, не MSW.",
-    "acceptance": "core.spec.ts: bot answer→handoff→claim→staff reply→confirm; tenants.spec.ts: другой tenant не читает dialogue; fake виден; два origins и mobile viewport. npm run test:e2e проходит.",
+    "output": "Обзор метрик + сценарий защиты на двух tenants; Playwright в CI использует реальный backend и fake LLM, не MSW. Совместно с B/C подготовить ручную демонстрацию с настоящими AI и внешней почтой.",
+    "acceptance": "core.spec.ts: bot answer→handoff→claim→staff reply→confirm; tenants.spec.ts: другой tenant не читает dialogue; fake виден; два origins и mobile viewport. npm run test:e2e проходит. До M4 вручную показать ответ реального ИИ с источником и письмо на согласованный настоящий адрес, затем продолжить диалог с другого устройства.",
     "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/8",
     "issue_number": 8
   },
@@ -291,12 +291,14 @@
     "status": "todo",
     "files": [
       "backend/src/ips/platform/{email_links.py,notifications.py}",
+      "backend/src/ips/core/config.py",
       "backend/src/ips/tickets/{ratings.py,analytics.py}",
-      "backend/tests/platform/test_links.py"
+      "backend/tests/platform/{test_links.py,test_smtp.py}",
+      ".env.example"
     ],
-    "inputs": "B03/B04; ConversationPort scope и metrics; StaffReplyEvent/NotificationPort; C07 outcome counters; SMTP sandbox.",
-    "output": "Request/confirm/exchange одноразовых ссылок; NotificationPort.enqueue_staff_reply в транзакции сообщения и idempotent SMTP job; rating; widget-filtered overview. В ядре jobs можно исполнять drain_once, постоянный worker в B09.",
-    "acceptance": "test_links.py: token hash+30min TTL, второй exchange отклонён, link scope не даёт другой conversation; score 1..5; metrics считают ai_confirmed только по подтверждению; нулевой знаменатель безопасен.",
+    "inputs": "B03/B04; ConversationPort scope и metrics; StaffReplyEvent/NotificationPort; локальный SMTP для CI; до M4 выбрать внешний SMTP-сервис и тестовый адрес.",
+    "output": "Request/confirm/exchange одноразовых ссылок; транзакционный NotificationPort и SMTP job; rating; widget-filtered overview. Добавить конфигурацию аутентифицированного SMTP с TLS (STARTTLS или implicit TLS по конфигурации), проверкой сертификата и безопасными таймаутами. Одна настройка используется для приглашений и уведомлений. В ядре jobs можно исполнять drain_once; постоянный worker — B09.",
+    "acceptance": "test_links.py: token hash+30min TTL, второй exchange отклонён, link scope не даёт другой conversation; score 1..5; metrics считают ai_confirmed только по подтверждению; нулевой знаменатель безопасен. test_smtp.py: безопасный TLS/auth, ошибка сервера не отмечает job доставленным, секреты не попадают в логи; CI использует локальный сервер. До M4: отправить подтверждение и уведомление на согласованный настоящий адрес, открыть защищённую ссылку с другого устройства; зафиксировать факт без токена, адреса и содержимого письма.",
     "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/17",
     "issue_number": 17
   },
@@ -314,7 +316,7 @@
       ".github/workflows/backend.yml"
     ],
     "inputs": "B01–B07 и интерфейсы C02–C07. Не ждёт C08 или A08: стенд нужен для их тестов; приёмка всех трёх вместе — gate M4.",
-    "output": "Composition root связывает порты; один Alembic head; seed двух companies; команды поднять/сбросить тестовый стенд; backup/restore smoke.",
+    "output": "Composition root связывает порты; один Alembic head; seed двух companies; команды поднять/сбросить тестовый стенд; backup/restore smoke. Подготовить воспроизводимую конфигурацию live AI и SMTP через переменные окружения, не сохраняя секреты в Git; сверить совместный сценарий с A08/C08.",
     "acceptance": "tests/integration/test_core.py: реальный handoff меняет mode и ticket атомарно; API restart сохраняет данные; fresh migration+upgrade с M3; backup восстанавливает обе компании. Все backend quality gates проходят.",
     "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/18",
     "issue_number": 18
@@ -423,7 +425,7 @@
     ],
     "inputs": "C01/C03; KnowledgeSearch, LLMProvider, UsageBudget fake до B06.",
     "output": "FTS по public/published/widget sections; top 5 snippets; один HTTPS provider по env; schemas validate AnswerResult; citations только из retrieved revisions.",
-    "acceptance": "test_provider.py: internal/foreign article не передаётся в prompt; выдуманная citation отбрасывается; 20s timeout; HTTP 429/5xx возвращают domain failure; ключ не попадает в logs. CI stub transport; реальный smoke вручную с ключом.",
+    "acceptance": "test_provider.py: internal/foreign article не передаётся в prompt; выдуманная citation отбрасывается; 20s timeout; HTTP 429/5xx возвращают domain failure; ключ не попадает в logs. CI stub transport; до M4 обязателен ручной успешный вызов настоящего провайдера с ключом: ответ по публичной статье и проверяемый источник. Провайдер пока не выбран.",
     "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/24",
     "issue_number": 24
   },
@@ -493,7 +495,7 @@
     ],
     "inputs": "C01–C07 и стенд B08 после его минимального запуска. Не ждёт A08; совместный M4 gate принимает все проверки.",
     "output": "12 фиксированных сценариев с expected behavior: known, unknown, ambiguity, human request, failed answer, urgency, injection, private, cross-tenant, timeout, quota, race; demo KB двух companies.",
-    "acceptance": "test_eval_cases.py: все 12 детерминированных сценариев проходят; handoff/privacy по assertions, не оценке другой LLM; отдельный ручной отчёт настоящего провайдера с model/date/limitations и без ключей.",
+    "acceptance": "test_eval_cases.py: все 12 детерминированных сценариев проходят; handoff/privacy по assertions, не оценке другой LLM. До приёмки M4 обязателен ручной отчёт по настоящему провайдеру: model/date, 3–5 вопросов по demo KB, источники и ограничения; без ключей и реальных персональных данных.",
     "issue_url": "https://github.com/Artiomion/ips-support-ai/issues/28",
     "issue_number": 28
   },

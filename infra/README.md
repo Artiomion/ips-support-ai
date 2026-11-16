@@ -23,5 +23,6 @@ Docker volume; остановка `docker compose -f infra/compose.yaml stop` е
 Для локальных приглашений Mailpit показывает письма на `http://localhost:8025`,
 SMTP принимает сообщения на `localhost:1025`. Обработать одно задание очереди
 можно из каталога `backend`: `uv run python -m ips.platform.notifications`.
-Mailpit предназначен для локальной демонстрации; внешняя доставка настраивается
-отдельно.
+Mailpit предназначен для разработки и CI. Для защиты обязательна внешняя
+почта: B07 добавляет SMTP-аутентификацию и TLS, затем команда проверяет
+доставку на настоящий адрес по `docs/demo-live-services.md`.

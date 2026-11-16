@@ -169,9 +169,9 @@
 
 **Входы / зависимости:** A01–A07; реальные B/C endpoint M0–M3. До них тесты пишутся на заданных fixtures.
 
-**Выход / интерфейсы:** Обзор метрик + сценарий защиты на двух tenants; Playwright использует реальный backend и fake LLM, не MSW.
+**Выход / интерфейсы:** Обзор метрик + сценарий защиты на двух tenants; Playwright в CI использует реальный backend и fake LLM, не MSW. Совместно с B/C подготовить ручную демонстрацию с настоящими AI и внешней почтой.
 
-**Критерий приёмки:** core.spec.ts: bot answer→handoff→claim→staff reply→confirm; tenants.spec.ts: другой tenant не читает dialogue; fake виден; два origins и mobile viewport. npm run test:e2e проходит.
+**Критерий приёмки:** core.spec.ts: bot answer→handoff→claim→staff reply→confirm; tenants.spec.ts: другой tenant не читает dialogue; fake виден; два origins и mobile viewport. npm run test:e2e проходит. До M4 вручную показать ответ реального ИИ с источником и письмо на согласованный настоящий адрес, затем продолжить диалог с другого устройства.
 
 **Выполнение:**
 
