@@ -50,6 +50,13 @@ metadata и site_origin без нового token. При expiry (401) loader у
 служебный widget origin и проверенный bearer, без third-party cookie.
 При недоступном storage сессия живёт в памяти; предлагается email continuation.
 
+Администратор получает ключ для конкретного виджета через защищённый
+`POST /api/v1/widgets/{widget_id}/signing-key` с CSRF. Ответ содержит
+base64url без padding в поле `key` и `algorithm: HMAC-SHA256`; сервер сайта
+декодирует key в байты. Ответ не кэшируется, ключ нельзя помещать в браузер
+или логи. Ключ производен от серверного `SESSION_SECRET` и widget ID; смена
+мастер-секрета меняет все ключи, поэтому сайтам понадобится обновить их.
+
 Для сайта с login его **сервер** подписывает HMAC payload:
 `widget_key, external_id, issued_at, expires_at, nonce` (base64url JSON + HMAC
 SHA-256). Секрет отдельный для каждого widget, никогда не в JS. Максимальный

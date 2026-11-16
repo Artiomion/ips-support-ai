@@ -4775,6 +4775,75 @@
         },
         "x-task": "B10"
       }
+    },
+    "/api/v1/widgets/{widget_id}/signing-key": {
+      "post": {
+        "operationId": "getWidgetSigningKey",
+        "tags": [
+          "B"
+        ],
+        "x-owner": "B",
+        "x-phase": "M4",
+        "x-task": "B03",
+        "summary": "Retrieve widget signing key",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WidgetSigningKey"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "422": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "429": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
+        },
+        "security": [
+          {
+            "staffCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "widget_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -7031,6 +7100,25 @@
         },
         "required": [
           "state"
+        ]
+      },
+      "WidgetSigningKey": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "algorithm": {
+            "type": "string",
+            "enum": [
+              "HMAC-SHA256"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "algorithm"
         ]
       }
     },
