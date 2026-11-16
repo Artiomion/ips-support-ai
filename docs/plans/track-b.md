@@ -146,13 +146,13 @@
 
 **Этап:** M3. **Баллы:** 4. **Владелец:** B.
 
-**Создать/изменить:** backend/src/ips/platform/{email_links.py,notifications.py}; backend/src/ips/tickets/{ratings.py,analytics.py}; backend/tests/platform/test_links.py.
+**Создать/изменить:** backend/src/ips/platform/{email_links.py,notifications.py}; backend/src/ips/core/config.py; backend/src/ips/tickets/{ratings.py,analytics.py}; backend/tests/platform/{test_links.py,test_smtp.py}; .env.example.
 
-**Входы / зависимости:** B03/B04; ConversationPort scope и metrics; StaffReplyEvent/NotificationPort; C07 outcome counters; SMTP sandbox.
+**Входы / зависимости:** B03/B04; ConversationPort scope и metrics; StaffReplyEvent/NotificationPort; локальный SMTP для CI; до M4 выбрать внешний SMTP-сервис и тестовый адрес.
 
-**Выход / интерфейсы:** Request/confirm/exchange одноразовых ссылок; NotificationPort.enqueue_staff_reply в транзакции сообщения и idempotent SMTP job; rating; widget-filtered overview. В ядре jobs можно исполнять drain_once, постоянный worker в B09.
+**Выход / интерфейсы:** Request/confirm/exchange одноразовых ссылок; транзакционный NotificationPort и SMTP job; rating; widget-filtered overview. Добавить конфигурацию аутентифицированного SMTP с TLS (STARTTLS или implicit TLS по конфигурации), проверкой сертификата и безопасными таймаутами. Одна настройка используется для приглашений и уведомлений. В ядре jobs можно исполнять drain_once; постоянный worker — B09.
 
-**Критерий приёмки:** test_links.py: token hash+30min TTL, второй exchange отклонён, link scope не даёт другой conversation; score 1..5; metrics считают ai_confirmed только по подтверждению; нулевой знаменатель безопасен.
+**Критерий приёмки:** test_links.py: token hash+30min TTL, второй exchange отклонён, link scope не даёт другой conversation; score 1..5; metrics считают ai_confirmed только по подтверждению; нулевой знаменатель безопасен. test_smtp.py: безопасный TLS/auth, ошибка сервера не отмечает job доставленным, секреты не попадают в логи; CI использует локальный сервер. До M4: отправить подтверждение и уведомление на согласованный настоящий адрес, открыть защищённую ссылку с другого устройства; зафиксировать факт без токена, адреса и содержимого письма.
 
 **Выполнение:**
 
@@ -169,7 +169,7 @@
 
 **Входы / зависимости:** B01–B07 и интерфейсы C02–C07. Не ждёт C08 или A08: стенд нужен для их тестов; приёмка всех трёх вместе — gate M4.
 
-**Выход / интерфейсы:** Composition root связывает порты; один Alembic head; seed двух companies; команды поднять/сбросить тестовый стенд; backup/restore smoke.
+**Выход / интерфейсы:** Composition root связывает порты; один Alembic head; seed двух companies; команды поднять/сбросить тестовый стенд; backup/restore smoke. Подготовить воспроизводимую конфигурацию live AI и SMTP через переменные окружения, не сохраняя секреты в Git; сверить совместный сценарий с A08/C08.
 
 **Критерий приёмки:** tests/integration/test_core.py: реальный handoff меняет mode и ticket атомарно; API restart сохраняет данные; fresh migration+upgrade с M3; backup восстанавливает обе компании. Все backend quality gates проходят.
 

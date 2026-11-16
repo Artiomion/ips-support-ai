@@ -95,7 +95,7 @@
 
 **Выход / интерфейсы:** FTS по public/published/widget sections; top 5 snippets; один HTTPS provider по env; schemas validate AnswerResult; citations только из retrieved revisions.
 
-**Критерий приёмки:** test_provider.py: internal/foreign article не передаётся в prompt; выдуманная citation отбрасывается; 20s timeout; HTTP 429/5xx возвращают domain failure; ключ не попадает в logs. CI stub transport; реальный smoke вручную с ключом.
+**Критерий приёмки:** test_provider.py: internal/foreign article не передаётся в prompt; выдуманная citation отбрасывается; 20s timeout; HTTP 429/5xx возвращают domain failure; ключ не попадает в logs. CI stub transport; до M4 обязателен ручной успешный вызов настоящего провайдера с ключом: ответ по публичной статье и проверяемый источник. Провайдер пока не выбран.
 
 **Выполнение:**
 
@@ -171,7 +171,7 @@
 
 **Выход / интерфейсы:** 12 фиксированных сценариев с expected behavior: known, unknown, ambiguity, human request, failed answer, urgency, injection, private, cross-tenant, timeout, quota, race; demo KB двух companies.
 
-**Критерий приёмки:** test_eval_cases.py: все 12 детерминированных сценариев проходят; handoff/privacy по assertions, не оценке другой LLM; отдельный ручной отчёт настоящего провайдера с model/date/limitations и без ключей.
+**Критерий приёмки:** test_eval_cases.py: все 12 детерминированных сценариев проходят; handoff/privacy по assertions, не оценке другой LLM. До приёмки M4 обязателен ручной отчёт по настоящему провайдеру: model/date, 3–5 вопросов по demo KB, источники и ограничения; без ключей и реальных персональных данных.
 
 **Выполнение:**
 

@@ -134,7 +134,7 @@ def main():
     print(f'PASS: {len(tasks)} cards; A/B/C 40 points each (32 MVP); all phases balanced')
     print(f'PASS: {len(operations)} operations, {len(schemas)} schemas, references and examples')
     print('PASS: local Markdown links, portable paths, pinned AI manifest')
-    print('Application runtime is not implemented or tested by this checker.')
+    print('This checker verifies planning files only; it does not test the application.')
     return 0
 
 

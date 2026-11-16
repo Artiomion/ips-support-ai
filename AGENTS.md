@@ -10,8 +10,8 @@ Backend — **Python**, frontend — TypeScript. Решения: `docs/architect
    Краткая выдача: `python3 scripts/task_context.py <ID>`;
    `--contracts` добавляет только принадлежащие карточке API и используемые DTO.
 2. Прочитай только связанные разделы `docs/contracts.md` и `docs/data-model.md`.
-3. `contracts/openapi.json` — согласованный HTTP-контракт; файл содержит проект,
-   а не доказательство существования API. Сейчас кода продукта ещё нет.
+3. `contracts/openapi.json` — согласованный HTTP-контракт, а не доказательство
+   готовности всех API. Актуальный статус задач смотри в GitHub Issues.
 4. Выбери одну карточку, ветку `codex/<ID>-<short-name>` и одного владельца.
    Если GitHub недоступен, работай локально и точно сообщи, что не отправлено.
 5. Первый запуск у другого участника: `docs/ai-setup.md`;
