@@ -1,3 +1,4 @@
+import os
 from uuid import uuid4
 
 import pytest
@@ -15,6 +16,8 @@ def engine():
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
     except OperationalError:
+        if os.getenv("IPS_REQUIRE_DATABASE") == "1":
+            pytest.fail("PostgreSQL is required for this test run")
         pytest.skip("PostgreSQL unavailable")
     yield engine
     engine.dispose()

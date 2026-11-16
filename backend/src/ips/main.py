@@ -4,11 +4,13 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from ips.core.config import Settings
+from ips.core.errors import install_error_handlers
 
 
 def create_app(settings: Settings | None = None, ports: object = None) -> FastAPI:
     settings = settings or Settings()
     app = FastAPI(title="IPS Support API")
+    install_error_handlers(app)
     app.state.ports = ports
     engine = create_engine(
         settings.database_url, pool_pre_ping=True, connect_args={"connect_timeout": 2}

@@ -11,4 +11,4 @@
 - Каждый владелец добавляет свою миграцию с уникальным revision ID;
   не редактировать чужую или уже применённую. B сводит heads перед merge.
 - Все ID, tenant-фильтры и приватность проверяются в реальной PostgreSQL.
-- До B01 backend-команд ещё нет: см. `docs/verification.md`.
+- Команды backend после B01 описаны в `docs/verification.md` и `infra/README.md`.
