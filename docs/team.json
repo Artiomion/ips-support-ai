@@ -4,7 +4,7 @@
   "members": [
     {
       "role": "A",
-      "github": null,
+      "github": "bachaa7",
       "focus": "Интерфейсы и клиентский опыт"
     },
     {
@@ -14,11 +14,11 @@
     },
     {
       "role": "C",
-      "github": null,
+      "github": "Gwynblai",
       "focus": "Диалоги, ИИ и знания"
     }
   ],
-  "role_assignment": "B=создатель репозитория — исходное предположение; роли можно поменять до первых PR",
+  "role_assignment": "A=bachaa7, B=Artiomion, C=Gwynblai; изменение ролей согласуется командой",
   "review_ring": {
     "A": "B",
     "B": "C",

@@ -1,6 +1,22 @@
-# Заполнить реальными @логинами после выбора ролей в docs/team.json.
-# Не использовать несуществующие placeholder accounts в активных правилах.
-# A: /apps/ /packages/ /tests/e2e/ и frontend workflow.
-# B: /backend/src/ips/core/ /backend/src/ips/platform/ /backend/src/ips/tickets/ /infra/.
-# C: /backend/src/ips/conversations/ /backend/src/ips/ai/ /backend/src/ips/knowledge/.
-# contracts: A + владелец endpoint; Alembic: B + C по изменённому домену.
+# A: bachaa7; B: Artiomion; C: Gwynblai. Источник ролей: docs/team.json.
+# GitHub применяет владельцев после принятия приглашения и получения write.
+* @Artiomion
+
+/apps/ @bachaa7
+/packages/ @bachaa7
+/tests/e2e/ @bachaa7
+/package.json @bachaa7
+/package-lock.json @bachaa7
+/.github/workflows/frontend.yml @bachaa7
+/docs/plans/track-a.md @bachaa7
+
+/backend/src/ips/conversations/ @Gwynblai
+/backend/src/ips/ai/ @Gwynblai
+/backend/src/ips/knowledge/ @Gwynblai
+/backend/tests/conversations/ @Gwynblai
+/backend/tests/ai/ @Gwynblai
+/backend/tests/knowledge/ @Gwynblai
+/docs/plans/track-c.md @Gwynblai
+
+/contracts/ @bachaa7 @Artiomion @Gwynblai
+/backend/alembic/versions/ @Artiomion @Gwynblai
