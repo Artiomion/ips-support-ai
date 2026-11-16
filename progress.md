@@ -7,7 +7,10 @@
   контракты, scope/риски, 3 дорожки, шаблоны PR/Issues и локальные инструменты.
 - Проверены установка pinned навыков и шесть сценариев безопасности файлов.
 - Независимый reviewer подтвердил закрытие найденных пробелов.
-- Создан приватный Artiomion/ips-support-ai и 30 Issues с метками ролей/этапов.
+- Создан приватный Artiomion/ips-support-ai, main отправлен; 30 Issues
+  с метками ролей/этапов, по 10 на участника.
+- GitHub Actions Planning package для первого commit завершился success:
+  https://github.com/Artiomion/ips-support-ai/actions/runs/43915785608
 
 ## Фактические проверки
 
