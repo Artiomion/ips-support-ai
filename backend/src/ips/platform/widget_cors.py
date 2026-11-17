@@ -12,6 +12,9 @@ from starlette.concurrency import run_in_threadpool
 from ips.platform.widgets import normalize_origin
 
 WIDGET_SESSION = re.compile(r"^/api/v1/public/widgets/([^/]+)/sessions$")
+TICKET_PATH = re.compile(
+    r"^/api/v1/public/(?:conversations/[^/]+/handoff|tickets/[^/]+(?:/confirm|/reopen)?)$"
+)
 
 
 def _is_allowed(request: Request, origin: str, widget_key: str | None) -> bool:
@@ -44,17 +47,27 @@ async def widget_cors(request: Request, call_next):
     path = request.url.path
     match = WIDGET_SESSION.fullmatch(path)
     is_session = path == "/api/v1/public/session"
-    if not match and not is_session:
+    is_ticket = bool(TICKET_PATH.fullmatch(path))
+    if not match and not is_session and not is_ticket:
         return await call_next(request)
     origin = request.headers.get("origin")
     if not origin:
         return await call_next(request)
     key = unquote(match.group(1)) if match else None
-    allowed = await run_in_threadpool(_is_allowed, request, origin, key)
+    allowed = (
+        origin == request.app.state.settings.widget_origin
+        if is_ticket
+        else await run_in_threadpool(_is_allowed, request, origin, key)
+    )
     preflight = request.method == "OPTIONS" and "access-control-request-method" in request.headers
     if preflight:
         vary = "Origin, Access-Control-Request-Method, Access-Control-Request-Headers, Access-Control-Request-Private-Network"
         method = request.headers["access-control-request-method"].upper()
+        expected_method = (
+            "POST"
+            if match or (is_ticket and path.endswith(("/handoff", "/confirm", "/reopen")))
+            else "GET"
+        )
         headers = {
             item.strip().lower()
             for item in request.headers.get("access-control-request-headers", "").split(",")
@@ -62,7 +75,7 @@ async def widget_cors(request: Request, call_next):
         }
         if (
             not allowed
-            or method != ("POST" if match else "GET")
+            or method != expected_method
             or not headers <= {"content-type", "authorization"}
             or "access-control-request-private-network" in request.headers
         ):
