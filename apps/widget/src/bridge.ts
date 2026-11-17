@@ -17,3 +17,9 @@ export async function acceptInit<T extends { site_origin: string }>(event: Pick<
   if (session.site_origin !== event.origin) throw new Error("Origin mismatch");
   return { token, apiOrigin, parentOrigin: event.origin, session };
 }
+
+export function handleEscape(event: KeyboardEvent, parent: Window, parentOrigin: string) {
+  if (event.key !== "Escape") return;
+  try { const origin = new URL(parentOrigin); if (origin.origin !== parentOrigin || !["http:", "https:"].includes(origin.protocol)) return; } catch { return; }
+  event.preventDefault(); parent.postMessage({ type: "ips:close" }, parentOrigin);
+}
