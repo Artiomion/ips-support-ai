@@ -103,7 +103,8 @@ class TicketService:
             {"created": created_at, "tenant": ctx.tenant_id, "conversation": conversation_id},
         )
 
-    def _ticket(self, uow: Session, tenant_id: UUID, ticket_id: UUID, *, lock: bool = False):
+    @staticmethod
+    def _ticket(uow: Session, tenant_id: UUID, ticket_id: UUID, *, lock: bool = False):
         query = "SELECT * FROM tickets WHERE tenant_id=:tenant AND id=:id"
         if lock:
             query += " FOR UPDATE"
@@ -112,10 +113,11 @@ class TicketService:
             raise HTTPException(404, "Ticket unavailable")
         return row
 
+    @staticmethod
     def update_status(
-        self, uow: Session, ctx: TenantContext, ticket_id: UUID, expected_version: int, status: str
+        uow: Session, ctx: TenantContext, ticket_id: UUID, expected_version: int, status: str
     ) -> TicketSummary:
-        row = self._ticket(uow, ctx.tenant_id, ticket_id, lock=True)
+        row = TicketService._ticket(uow, ctx.tenant_id, ticket_id, lock=True)
         if ctx.role != "admin" and row["assignee_id"] != ctx.membership_id:
             raise HTTPException(403, "Ticket is assigned to another specialist")
         transitions = {

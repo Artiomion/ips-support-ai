@@ -10,6 +10,8 @@ from ips.platform.members import router as members_router
 from ips.platform.router import router as auth_router
 from ips.platform.widget_api import public_router, staff_router
 from ips.platform.widget_cors import widget_cors
+from ips.tickets.router import router as tickets_router
+from ips.tickets.router import staff_router as tickets_staff_router
 
 
 def create_app(settings: Settings | None = None, ports: object = None) -> FastAPI:
@@ -29,6 +31,8 @@ def create_app(settings: Settings | None = None, ports: object = None) -> FastAP
     app.include_router(members_router)
     app.include_router(staff_router)
     app.include_router(public_router)
+    app.include_router(tickets_router)
+    app.include_router(tickets_staff_router)
     app.middleware("http")(widget_cors)
     engine = create_engine(
         settings.database_url, pool_pre_ping=True, connect_args={"connect_timeout": 2}
