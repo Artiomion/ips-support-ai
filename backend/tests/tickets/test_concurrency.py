@@ -278,3 +278,91 @@ def test_reopen_rejects_when_assignee_is_already_at_capacity(assignment_data):
     with Session(engine) as db, pytest.raises(HTTPException) as error:
         TicketService(FakeConversations()).reopen(db, principal, tickets[0])
     assert error.value.status_code == 409
+
+
+def test_reassignment_permissions_capacity_and_release(assignment_data):
+    from ips.tickets.assignment import reassign_ticket
+
+    engine, _, contexts, tickets = assignment_data
+    with Session(engine) as db, db.begin():
+        claimed = claim_ticket(db, contexts[0], tickets[0], 1)
+    with Session(engine) as db, db.begin():
+        claim_ticket(db, contexts[1], tickets[1], 1)
+    with Session(engine) as db, pytest.raises(HTTPException) as error:
+        reassign_ticket(db, contexts[0], tickets[0], claimed.version, contexts[1].membership_id)
+    assert error.value.status_code == 409
+    with Session(engine) as db, pytest.raises(HTTPException) as error:
+        reassign_ticket(db, contexts[1], tickets[0], claimed.version, None)
+    assert error.value.status_code == 403
+    with Session(engine) as db, db.begin():
+        released = reassign_ticket(db, contexts[0], tickets[0], claimed.version, None)
+    assert released.status == "waiting_specialist" and released.assignee_id is None
+    assert released.version == claimed.version + 1
+    admin = contexts[0].model_copy(update={"role": "admin"})
+    with Session(engine) as db, db.begin():
+        assigned = reassign_ticket(
+            db, admin, tickets[0], released.version, contexts[0].membership_id
+        )
+    assert assigned.status == "in_progress" and assigned.assignee_id == contexts[0].membership_id
+
+
+def test_claim_and_release_are_available_over_authenticated_http(assignment_data):
+    from fastapi.testclient import TestClient
+
+    from ips.main import create_app
+    from ips.platform.auth import require_csrf, tenant_context
+
+    _, _, contexts, tickets = assignment_data
+    app = create_app(Settings())
+    with TestClient(app) as client:
+        claim_url = f"/api/v1/tickets/{tickets[0]}/claim"
+        assert client.post(claim_url, json={"expected_version": 1}).status_code in (401, 422)
+        app.dependency_overrides[tenant_context] = lambda: contexts[0]
+        app.dependency_overrides[require_csrf] = lambda: None
+        result = client.post(claim_url, json={"expected_version": 1})
+        assert result.status_code == 200, result.text
+        assert result.json()["assignee_id"] == str(contexts[0].membership_id)
+        assert client.post(claim_url, json={"expected_version": 1}).status_code == 409
+        url = f"/api/v1/tickets/{tickets[0]}"
+        assert (
+            client.put(
+                url, json={"expected_version": 2, "assignee_id": None, "priority": "high"}
+            ).status_code
+            == 503
+        )
+        released = client.put(url, json={"expected_version": 2, "assignee_id": None})
+        assert released.status_code == 200 and released.json()["status"] == "waiting_specialist"
+
+
+def test_reassign_and_claim_share_capacity_lock(assignment_data):
+    from ips.tickets.assignment import reassign_ticket
+
+    engine, tenant, contexts, tickets = assignment_data
+    with Session(engine) as db, db.begin():
+        claim_ticket(db, contexts[0], tickets[0], 1)
+    start = Barrier(2, timeout=5)
+
+    def run(operation):
+        with Session(engine) as db:
+            start.wait()
+            try:
+                if operation == "reassign":
+                    reassign_ticket(db, contexts[0], tickets[0], 2, contexts[1].membership_id)
+                else:
+                    claim_ticket(db, contexts[1], tickets[1], 1)
+                db.commit()
+                return 200
+            except HTTPException as error:
+                db.rollback()
+                return error.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(run, ["reassign", "claim"])) == [200, 409]
+    with engine.connect() as conn:
+        count = conn.execute(
+            text(
+                "SELECT count(*) FROM tickets WHERE tenant_id=:tenant AND assignee_id=:member AND status NOT IN ('resolved','closed')"
+            ),
+            {"tenant": tenant, "member": contexts[1].membership_id},
+        ).scalar_one()
+        assert count == 1
