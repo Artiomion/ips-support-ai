@@ -345,7 +345,10 @@ def test_staff_update_status_requires_csrf_and_rejects_stale_version(context):
         assert result.status_code == 200, result.text
         assert result.json()["status"] == "resolved"
         assert client.put(path, json=body).status_code == 409
-        assert client.put(path, json={"expected_version": 2, "priority": "high"}).status_code == 503
+        updated = client.put(path, json={"expected_version": 2, "priority": "high"})
+        assert updated.status_code == 200
+        assert updated.json()["priority"] == "high"
+        assert updated.json()["version"] == 3
 
 
 def test_public_handoff_authenticates_real_customer_bearer():
@@ -411,3 +414,132 @@ def test_public_handoff_authenticates_real_customer_bearer():
         assert result.status_code == 200, result.text
         assert result.headers["access-control-allow-origin"] == app.state.settings.widget_origin
         assert "access-control-allow-credentials" not in result.headers
+
+
+def test_ticket_details_are_atomic_and_category_is_tenant_scoped(context):
+    from fastapi.testclient import TestClient
+
+    from ips.core.ports import TenantContext
+    from ips.main import create_app
+    from ips.platform.auth import require_csrf, tenant_context
+
+    engine, principal, fake = context
+    category, foreign_tenant, foreign_category = uuid4(), uuid4(), uuid4()
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO organizations (id, name) VALUES (:id, 'foreign')"),
+            {"id": foreign_tenant},
+        )
+        conn.execute(
+            text("INSERT INTO categories (id, tenant_id, name) VALUES (:id, :tenant, 'Own')"),
+            {"id": category, "tenant": principal.tenant_id},
+        )
+        conn.execute(
+            text("INSERT INTO categories (id, tenant_id, name) VALUES (:id, :tenant, 'Foreign')"),
+            {"id": foreign_category, "tenant": foreign_tenant},
+        )
+    try:
+        with Session(engine) as uow, uow.begin():
+            ticket = TicketService(fake).escalate(
+                uow, principal, fake.state.id, "Help", None, "normal"
+            )
+            uow.execute(
+                text("UPDATE tickets SET status='in_progress' WHERE id=:id"), {"id": ticket.id}
+            )
+        admin = TenantContext(
+            tenant_id=principal.tenant_id, user_id=uuid4(), membership_id=uuid4(), role="admin"
+        )
+        specialist = admin.model_copy(update={"role": "specialist"})
+        app = create_app(Settings())
+        app.dependency_overrides[tenant_context] = lambda: admin
+        app.dependency_overrides[require_csrf] = lambda: None
+        with TestClient(app) as client:
+            url = f"/api/v1/tickets/{ticket.id}"
+            response = client.put(
+                url,
+                json={
+                    "expected_version": 1,
+                    "priority": "urgent",
+                    "category_id": str(foreign_category),
+                },
+            )
+            assert response.status_code == 404
+            assert client.get(url).json()["priority"] == "normal"
+            app.dependency_overrides[tenant_context] = lambda: specialist
+            assert (
+                client.put(url, json={"expected_version": 1, "priority": "high"}).status_code == 403
+            )
+            app.dependency_overrides[tenant_context] = lambda: admin
+            response = client.put(
+                url,
+                json={
+                    "expected_version": 1,
+                    "priority": "urgent",
+                    "category_id": str(category),
+                    "status": "resolved",
+                },
+            )
+            assert response.status_code == 200, response.text
+            assert (
+                response.json()["priority"],
+                response.json()["category_id"],
+                response.json()["status"],
+                response.json()["version"],
+            ) == ("urgent", str(category), "resolved", 2)
+            assert (
+                client.put(url, json={"expected_version": 1, "category_id": None}).status_code
+                == 409
+            )
+            response = client.put(url, json={"expected_version": 2, "category_id": None})
+            assert response.status_code == 200 and response.json()["category_id"] is None
+            assert (
+                client.put(
+                    url,
+                    json={"expected_version": 3, "assignee_id": str(uuid4()), "priority": "low"},
+                ).status_code
+                == 503
+            )
+            assert client.get(url).json()["priority"] == "urgent"
+    finally:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE tickets SET category_id=NULL WHERE tenant_id=:tenant"),
+                {"tenant": principal.tenant_id},
+            )
+            conn.execute(
+                text("DELETE FROM categories WHERE id IN (:own, :other)"),
+                {"own": category, "other": foreign_category},
+            )
+            conn.execute(text("DELETE FROM organizations WHERE id=:id"), {"id": foreign_tenant})
+
+
+def test_concurrent_ticket_updates_do_not_overwrite_each_other(context):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from ips.core.ports import TenantContext
+
+    engine, principal, fake = context
+    with Session(engine) as uow, uow.begin():
+        ticket = TicketService(fake).escalate(uow, principal, fake.state.id, "Help", None, "normal")
+    admin = TenantContext(
+        tenant_id=principal.tenant_id, user_id=uuid4(), membership_id=uuid4(), role="admin"
+    )
+    start = Barrier(2, timeout=5)
+
+    def update(priority):
+        with Session(engine) as uow:
+            start.wait()
+            try:
+                value = TicketService.update_details(
+                    uow, admin, ticket.id, 1, {"priority": priority}
+                )
+                uow.commit()
+                return value.version
+            except HTTPException as error:
+                uow.rollback()
+                return error.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(update, ["high", "urgent"]))
+    assert sorted(outcomes) == [2, 409]

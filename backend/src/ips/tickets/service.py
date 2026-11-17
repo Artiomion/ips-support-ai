@@ -117,28 +117,58 @@ class TicketService:
     def update_status(
         uow: Session, ctx: TenantContext, ticket_id: UUID, expected_version: int, status: str
     ) -> TicketSummary:
+        return TicketService.update_details(
+            uow, ctx, ticket_id, expected_version, {"status": status}
+        )
+
+    @staticmethod
+    def update_details(
+        uow: Session, ctx: TenantContext, ticket_id: UUID, expected_version: int, changes: dict
+    ) -> TicketSummary:
+        # Keep the version check and all requested changes under the same row lock.
         row = TicketService._ticket(uow, ctx.tenant_id, ticket_id, lock=True)
         if ctx.role != "admin" and row["assignee_id"] != ctx.membership_id:
             raise HTTPException(403, "Ticket is assigned to another specialist")
+        if row["version"] != expected_version:
+            raise HTTPException(409, "Ticket changed")
+        if not changes or set(changes) - {"status", "priority", "category_id"}:
+            raise HTTPException(422, "Invalid update")
         transitions = {
             "in_progress": {"waiting_customer", "resolved"},
             "waiting_customer": {"in_progress", "resolved"},
         }
-        if row["version"] != expected_version or status not in transitions.get(
-            row["status"], set()
-        ):
+        status = changes.get("status")
+        if "status" in changes and status is None:
+            raise HTTPException(422, "Invalid status")
+        if status is not None and status not in transitions.get(row["status"], set()):
             raise HTTPException(409, "Ticket changed or transition is not allowed")
+        if "priority" in changes and changes["priority"] not in ("low", "normal", "high", "urgent"):
+            raise HTTPException(422, "Invalid priority")
+        category_id = changes.get("category_id")
+        if "category_id" in changes and category_id is not None:
+            category = uow.execute(
+                text("SELECT id FROM categories WHERE tenant_id=:tenant AND id=:id FOR KEY SHARE"),
+                {"tenant": ctx.tenant_id, "id": category_id},
+            ).scalar_one_or_none()
+            if category is None:
+                raise HTTPException(404, "Category unavailable")
+        fields = ["version=version+1", "updated_at=now()"]
+        params = {"tenant": ctx.tenant_id, "id": ticket_id}
+        for key in ("status", "priority", "category_id"):
+            if key in changes:
+                fields.append(f"{key}=:{key}")
+                params[key] = changes[key]
+        if status is not None:
+            fields.append("resolved_at=CASE WHEN :is_resolved THEN now() ELSE NULL END")
+            params["is_resolved"] = status == "resolved"
         updated = (
             uow.execute(
-                text("""UPDATE tickets SET status=:status, version=version+1,
-            updated_at=now(), resolved_at=CASE WHEN :is_resolved THEN now() ELSE NULL END
-            WHERE tenant_id=:tenant AND id=:id RETURNING *"""),
-                {
-                    "tenant": ctx.tenant_id,
-                    "id": ticket_id,
-                    "status": status,
-                    "is_resolved": status == "resolved",
-                },
+                text(
+                    "UPDATE tickets SET "
+                    + ", ".join(fields)
+                    + " WHERE tenant_id=:tenant AND id=:id RETURNING *"
+                ),
+                params,
             )
             .mappings()
             .one()
