@@ -125,6 +125,7 @@ class TicketService:
     def update_details(
         uow: Session, ctx: TenantContext, ticket_id: UUID, expected_version: int, changes: dict
     ) -> TicketSummary:
+        # Keep the version check and all requested changes under the same row lock.
         row = TicketService._ticket(uow, ctx.tenant_id, ticket_id, lock=True)
         if ctx.role != "admin" and row["assignee_id"] != ctx.membership_id:
             raise HTTPException(403, "Ticket is assigned to another specialist")
