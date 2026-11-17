@@ -39,6 +39,7 @@ def claim_ticket(
     )
     if row is None:
         raise HTTPException(404, "Ticket unavailable")
+    # A stale version must not change the assignee or consume capacity.
     if row["version"] != expected_version:
         raise HTTPException(409, "Ticket changed")
     if row["status"] == "in_progress" and row["assignee_id"] == ctx.membership_id:
