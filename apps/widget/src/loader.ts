@@ -27,6 +27,7 @@ export async function resolveSession(apiOrigin: string, key: string, store: Retu
   store.set(body.access_token); return body.access_token;
 }
 
+let widgetCounter = 0;
 export function mountWidget(script: HTMLScriptElement) {
   const key = script.dataset.widgetKey || "";
   if (!key) return;
@@ -35,7 +36,9 @@ export function mountWidget(script: HTMLScriptElement) {
   let apiOrigin: string;
   try { const url = new URL(script.dataset.apiOrigin || widgetOrigin); if (!["https:", "http:"].includes(url.protocol) || url.origin !== url.href.replace(/\/$/, "")) throw Error(); apiOrigin = url.origin; } catch { return; }
   const button = document.createElement("button"); button.type = "button"; button.textContent = "Открыть чат";
-  const frame = document.createElement("iframe"); frame.title = "Чат поддержки"; frame.src = new URL("./index.html", scriptUrl).href;
+  const frame = document.createElement("iframe"); frame.title = "Чат поддержки"; frame.id = `ips-widget-${++widgetCounter}`;
+  const frameUrl = new URL("./index.html", scriptUrl); frameUrl.searchParams.set("parent_origin", window.location.origin); frame.src = frameUrl.href;
+  button.setAttribute("aria-controls", frame.id); button.setAttribute("aria-expanded", "false");
   frame.hidden = true;
   Object.assign(frame.style, { position: "fixed", right: "16px", bottom: "64px", width: "min(360px, calc(100vw - 32px))", height: "min(540px, calc(100vh - 80px))", border: "1px solid #bbb", background: "white", zIndex: "2147483646" });
   Object.assign(button.style, { position: "fixed", right: "16px", bottom: "16px", zIndex: "2147483647" });
@@ -49,16 +52,22 @@ export function mountWidget(script: HTMLScriptElement) {
     try {
       const token = await resolveSession(apiOrigin, key, store);
       if (opened) frame.contentWindow?.postMessage({ type: "ips:init", token, apiOrigin }, widgetOrigin);
-    } catch { opened = false; frame.hidden = true; button.textContent = "Чат недоступен — повторить"; }
+    } catch { opened = false; frame.hidden = true; button.textContent = "Чат недоступен — повторить"; button.setAttribute("aria-expanded", "false"); button.focus(); }
     finally { pending = false; if (queued) { queued = false; void sendInit(); } }
   }
+  function close() {
+    opened = false; frame.hidden = true; button.textContent = "Открыть чат"; button.setAttribute("aria-expanded", "false");
+    frame.contentWindow?.postMessage({ type: "ips:closed" }, widgetOrigin); button.focus();
+  }
   button.addEventListener("click", () => {
-    opened = !opened; frame.hidden = !opened; button.textContent = opened ? "Закрыть чат" : "Открыть чат";
-    if (opened) void sendInit(); else frame.contentWindow?.postMessage({ type: "ips:closed" }, widgetOrigin);
+    if (opened) { close(); return; }
+    opened = true; frame.hidden = false; button.textContent = "Закрыть чат"; button.setAttribute("aria-expanded", "true");
+    frame.focus(); void sendInit();
   });
   window.addEventListener("message", (event) => {
     if (!frame.contentWindow || !isTrustedMessage(event, frame.contentWindow, widgetOrigin)) return;
     if (event.data?.type === "ips:ready") { ready = true; void sendInit(); }
+    else if (event.data?.type === "ips:close" && opened) close();
   });
 }
 
