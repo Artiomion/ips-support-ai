@@ -196,9 +196,43 @@ class TicketService:
         return self._ticket(uow, principal.tenant_id, ticket_id, lock=True), state
 
     def reopen(self, uow: Session, principal: CustomerPrincipal, ticket_id: UUID) -> TicketSummary:
+        initial = self._ticket(uow, principal.tenant_id, ticket_id)
+        if (
+            principal.conversation_scope is not None
+            and principal.conversation_scope != initial["conversation_id"]
+        ):
+            raise HTTPException(404, "Ticket unavailable")
+        assignee_id = initial["assignee_id"]
+        member = None
+        if assignee_id is not None:
+            # Capacity-changing paths always lock membership before the ticket.
+            member = (
+                uow.execute(
+                    text(
+                        "SELECT max_active FROM memberships WHERE tenant_id=:tenant AND id=:id FOR UPDATE"
+                    ),
+                    {"tenant": principal.tenant_id, "id": assignee_id},
+                )
+                .mappings()
+                .first()
+            )
         row, state = self._customer_ticket(uow, principal, ticket_id)
-        if row["status"] != "resolved" or self.has_active(uow, principal.tenant_id, state.id):
+        if (
+            row["status"] != "resolved"
+            or row["assignee_id"] != assignee_id
+            or self.has_active(uow, principal.tenant_id, state.id)
+        ):
             raise HTTPException(409, "Ticket cannot be reopened")
+        if assignee_id is not None:
+            if member is None:
+                raise HTTPException(409, "Assignee unavailable")
+            active = uow.execute(
+                text("""SELECT count(*) FROM tickets WHERE tenant_id=:tenant AND assignee_id=:id
+                    AND status NOT IN ('resolved','closed')"""),
+                {"tenant": principal.tenant_id, "id": assignee_id},
+            ).scalar_one()
+            if active >= member["max_active"]:
+                raise HTTPException(409, "Assignee at capacity")
         updated = (
             uow.execute(
                 text("""UPDATE tickets SET status='in_progress', version=version+1,
