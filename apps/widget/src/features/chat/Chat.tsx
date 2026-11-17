@@ -1,0 +1,63 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { createApiClient } from "../../../../../packages/api-client/src/client";
+import type { components } from "../../../../../packages/api-client/src/generated";
+import { createPoller, createSender } from "./controller";
+import { listConversations } from "../history/api";
+
+type Conversation = components["schemas"]["Conversation"];
+type Message = components["schemas"]["PublicMessage"];
+type Session = components["schemas"]["CurrentPublicSession"];
+export function Chat({ token, apiOrigin, session, open }: { token: string; apiOrigin: string; session: Session; open: boolean }) {
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const client = useRef(createApiClient({ baseUrl: apiOrigin, customerToken: token })).current;
+  const selectedRef = useRef(selected); selectedRef.current = selected;
+  const reload = useCallback(async () => {
+    const id = selectedRef.current; if (!id) return;
+    try {
+      const all: Message[] = []; let cursor: string | undefined;
+      do {
+        const result = await client.get("/api/v1/public/conversations/{conversation_id}/messages", { params: { path: { conversation_id: id }, query: { limit: 100, ...(cursor ? { cursor } : {}) } } });
+        if (!result.data) throw new Error("Пустой ответ");
+        all.push(...result.data.items); cursor = result.data.next_cursor || undefined;
+      } while (cursor);
+      if (selectedRef.current === id) { setMessages(all); setError(""); }
+    } catch { if (selectedRef.current === id) setError("Не удалось загрузить сообщения."); }
+  }, [client]);
+  const sender = useMemo(() => createSender(async (content, messageId) => {
+    const id = selected; if (!id) return;
+    await client.post("/api/v1/public/conversations/{conversation_id}/messages", { params: { path: { conversation_id: id } }, body: { client_message_id: messageId, text: content } });
+    await reload();
+  }), [client, reload, selected]);
+  useEffect(() => { if (!open) return; let active = true; listConversations(client).then((items) => { if (active) setConversations((old) => [...old.filter((entry) => !items.some((item) => item.id === entry.id)), ...items]); }).catch(() => { if (active) setError("Не удалось загрузить историю."); }); return () => { active = false; }; }, [client, open]);
+  useEffect(() => {
+    if (!open || !selected) return;
+    void reload(); const poller = createPoller(() => { void reload(); }); poller.start();
+    return () => poller.stop();
+  }, [open, selected, reload]);
+  async function newConversation() {
+    if (busy) return; setBusy(true); setError("");
+    try {
+      const result = await client.post("/api/v1/public/conversations", { body: {} });
+      if (!result.data) throw new Error("Пустой ответ");
+      setConversations((old) => [result.data!, ...old]); setMessages([]); setSelected(result.data.id);
+    } catch { setError("Не удалось создать диалог."); } finally { setBusy(false); }
+  }
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (busy || !text.trim()) return;
+    setBusy(true); setError("");
+    try { await sender.submit(text); setText(""); } catch { setError("Сообщение не отправлено. Повторите попытку."); } finally { setBusy(false); }
+  }
+  return <main><h1>{session.name}</h1><p>{session.greeting}</p>
+    {error && <p role="alert">{error}</p>}
+    <button type="button" disabled={busy} onClick={() => { void newConversation(); }}>Новая проблема</button>
+    <h2>История диалогов</h2><ul>{conversations.map((item) => <li key={item.id}><button type="button" onClick={() => { setMessages([]); setSelected(item.id); }}>Диалог от {new Date(item.created_at).toLocaleString()}</button></li>)}</ul>
+    {selected && <section><h2>Сообщения</h2><ul>{messages.map((message) => <li key={message.id}><strong>{message.kind === "customer" ? "Вы" : message.kind === "specialist" ? "Специалист" : "Помощник"}:</strong> {message.text}{message.sources.map((source) => <small key={`${source.article_id}-${source.revision}`}> Источник: {source.title}</small>)}</li>)}</ul>
+      <form onSubmit={(event) => { void submit(event); }}><label>Сообщение <input value={text} onChange={(event) => setText(event.target.value)} maxLength={8000} required /></label><button disabled={busy}>Отправить</button></form>
+    </section>}
+  </main>;
+}
