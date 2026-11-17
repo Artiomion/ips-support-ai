@@ -13,6 +13,7 @@ from ips.tickets.service import TicketService
 class FakeConversations:
     def __init__(self, state):
         self.state = state
+        self.confirmed = []
 
     def lock_for_handoff(self, uow, tenant_id, conversation_id):
         if (tenant_id, conversation_id) != (self.state.tenant_id, self.state.id):
@@ -23,7 +24,7 @@ class FakeConversations:
         self.state = state.model_copy(update={"mode": "human"})
 
     def confirm_human(self, uow, tenant_id, conversation_id):
-        pass
+        self.confirmed.append((tenant_id, conversation_id))
 
 
 @pytest.fixture
@@ -134,3 +135,69 @@ def test_database_enforces_one_active_ticket_per_conversation(context):
                 ),
                 {"id": uuid4(), "tenant": principal.tenant_id, "conversation": fake.state.id},
             )
+
+
+def test_staff_status_requires_current_version_and_valid_transition(context):
+    from ips.core.ports import TenantContext
+
+    engine, principal, fake = context
+    service = TicketService(fake)
+    admin = TenantContext(
+        tenant_id=principal.tenant_id, user_id=uuid4(), membership_id=uuid4(), role="admin"
+    )
+    with Session(engine) as uow, uow.begin():
+        ticket = service.escalate(uow, principal, fake.state.id, "Help", None, "normal")
+        with pytest.raises(HTTPException) as error:
+            service.update_status(uow, admin, ticket.id, ticket.version, "resolved")
+        assert error.value.status_code == 409
+        uow.execute(text("UPDATE tickets SET status='in_progress' WHERE id=:id"), {"id": ticket.id})
+        updated = service.update_status(uow, admin, ticket.id, ticket.version, "resolved")
+        assert updated.status == "resolved"
+        assert updated.version == ticket.version + 1
+        with pytest.raises(HTTPException) as error:
+            service.update_status(uow, admin, ticket.id, ticket.version, "waiting_customer")
+        assert error.value.status_code == 409
+
+
+def test_staff_updates_require_assignee_or_admin_and_same_tenant(context):
+    from ips.core.ports import TenantContext
+
+    engine, principal, fake = context
+    service = TicketService(fake)
+    specialist = TenantContext(
+        tenant_id=principal.tenant_id, user_id=uuid4(), membership_id=uuid4(), role="specialist"
+    )
+    foreign = specialist.model_copy(update={"tenant_id": uuid4(), "role": "admin"})
+    with Session(engine) as uow, uow.begin():
+        ticket = service.escalate(uow, principal, fake.state.id, "Help", None, "normal")
+        uow.execute(text("UPDATE tickets SET status='in_progress' WHERE id=:id"), {"id": ticket.id})
+        for ctx, expected in ((specialist, 403), (foreign, 404)):
+            with pytest.raises(HTTPException) as error:
+                service.update_status(uow, ctx, ticket.id, ticket.version, "resolved")
+            assert error.value.status_code == expected
+
+
+def test_customer_reopen_and_confirm_enforce_ownership_and_active_ticket(context):
+    engine, principal, fake = context
+    service = TicketService(fake)
+    with Session(engine) as uow, uow.begin():
+        first = service.escalate(uow, principal, fake.state.id, "Help", None, "normal")
+        uow.execute(text("UPDATE tickets SET status='resolved' WHERE id=:id"), {"id": first.id})
+        foreign = principal.model_copy(update={"customer_id": uuid4()})
+        with pytest.raises(HTTPException) as error:
+            service.reopen(uow, foreign, first.id)
+        assert error.value.status_code == 404
+        second = service.escalate(uow, principal, fake.state.id, "More help", None, "normal")
+        with pytest.raises(HTTPException) as error:
+            service.reopen(uow, principal, first.id)
+        assert error.value.status_code == 409
+        uow.execute(text("UPDATE tickets SET status='closed' WHERE id=:id"), {"id": second.id})
+        reopened = service.reopen(uow, principal, first.id)
+        assert reopened.id == first.id and reopened.status == "in_progress"
+        uow.execute(text("UPDATE tickets SET status='resolved' WHERE id=:id"), {"id": first.id})
+        closed = service.confirm(uow, principal, first.id)
+        assert closed.status == "closed"
+        assert fake.confirmed == [(principal.tenant_id, fake.state.id)]
+        with pytest.raises(HTTPException) as error:
+            service.reopen(uow, principal, first.id)
+        assert error.value.status_code == 409
