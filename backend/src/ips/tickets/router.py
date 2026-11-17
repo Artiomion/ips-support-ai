@@ -135,6 +135,7 @@ def get_staff_ticket(
 
 
 def service_for(request: Request) -> TicketService:
+    # The conversation port is required to verify customer ownership.
     port = getattr(request.app.state.ports, "conversations", None)
     if port is None:
         raise HTTPException(503, "Conversation service unavailable")
