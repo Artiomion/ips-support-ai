@@ -72,9 +72,10 @@ def update_ticket(
     ctx: Annotated[TenantContext, Depends(tenant_context)],
     db: Annotated[Session, Depends(get_session)],
 ) -> TicketSummary:
-    if body.model_fields_set & {"priority", "category_id", "assignee_id"} or body.status is None:
+    if "assignee_id" in body.model_fields_set:
         raise HTTPException(503, "This ticket update is not available yet")
-    result = TicketService.update_status(db, ctx, ticket_id, body.expected_version, body.status)
+    changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
+    result = TicketService.update_details(db, ctx, ticket_id, body.expected_version, changes)
     db.commit()
     return result
 
