@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { test, expect, type APIRequestContext } from "@playwright/test";
 import type { components } from "../../packages/api-client/src/generated";
 
-const panelOrigin = "http://localhost:5173";
-const widgetOrigin = "http://localhost:5174";
+const panelOrigin = "http://127.0.0.1:5173";
+const widgetOrigin = "http://127.0.0.1:5174";
 type Widget = components["schemas"]["Widget"];
 type Session = components["schemas"]["PublicSession"];
 type Companies = {
@@ -13,6 +13,7 @@ type Companies = {
   betaWidget: Widget;
   alphaCsrf: string;
   betaCsrf: string;
+  betaCredentials: { email: string; password: string };
   customer: (widget: Widget, origin: string) => Promise<APIRequestContext>;
 };
 
@@ -27,8 +28,9 @@ const isolationTest = test.extend<{ companies: Companies }>({
     }
     async function company(name: string, siteOrigin: string) {
       const staff = await context({ Origin: panelOrigin });
+      const credentials = { email: `e2e-${randomUUID()}@example.org`, password: randomUUID() };
       const registered = await staff.post("/api/v1/auth/register", { data: {
-        organization_name: name, email: `e2e-${randomUUID()}@example.org`, password: randomUUID(),
+        organization_name: name, ...credentials,
       } });
       expect(registered.status()).toBe(201);
       const session: components["schemas"]["TenantStaffSession"] = await registered.json();
@@ -36,7 +38,7 @@ const isolationTest = test.extend<{ companies: Companies }>({
         name, color: "#123456", greeting: "Welcome", allowed_origins: [siteOrigin], section_ids: [],
       } });
       expect(created.status()).toBe(201);
-      return { staff, csrf: session.csrf_token, widget: await created.json() as Widget };
+      return { staff, csrf: session.csrf_token, widget: await created.json() as Widget, credentials };
     }
     try {
       const alpha = await company("E2E Alpha", "https://alpha.example");
@@ -48,7 +50,7 @@ const isolationTest = test.extend<{ companies: Companies }>({
         const session: Session = await response.json();
         return context({ Origin: widgetOrigin, Authorization: `Bearer ${session.access_token}` });
       }
-      await use({ alpha: alpha.staff, beta: beta.staff, alphaCsrf: alpha.csrf, betaCsrf: beta.csrf, alphaWidget: alpha.widget, betaWidget: beta.widget, customer });
+      await use({ alpha: alpha.staff, beta: beta.staff, alphaCsrf: alpha.csrf, betaCsrf: beta.csrf, betaCredentials: beta.credentials, alphaWidget: alpha.widget, betaWidget: beta.widget, customer });
     } finally {
       await Promise.all(contexts.map((value) => value.dispose()));
     }
@@ -114,4 +116,48 @@ test("conversation CORS accepts the widget origin and refuses other origins", as
   const denied = await request.fetch("/api/v1/public/conversations", { method: "OPTIONS", headers: { ...headers, Origin: "https://attacker.example" } });
   expect(denied.status()).toBe(403);
   expect(denied.headers()["access-control-allow-origin"]).toBeUndefined();
+});
+
+isolationTest("@browser staff sees its own queue, sends a reply, and keeps notes private", async ({ companies, page }) => {
+  const alphaCustomer = await companies.customer(companies.alphaWidget, "https://alpha.example");
+  const betaCustomer = await companies.customer(companies.betaWidget, "https://beta.example");
+  async function createTicket(client: APIRequestContext, text: string) {
+    const created = await client.post("/api/v1/public/conversations", { data: {} });
+    expect(created.status()).toBe(201);
+    const conversation: components["schemas"]["Conversation"] = await created.json();
+    const message = await client.post(`/api/v1/public/conversations/${conversation.id}/messages`, { data: { client_message_id: randomUUID(), text } });
+    expect(message.status()).toBe(201);
+    const handoff = await client.post(`/api/v1/public/conversations/${conversation.id}/handoff`, { data: { reason: "Please help" } });
+    expect(handoff.status()).toBe(200);
+    return await handoff.json() as components["schemas"]["TicketSummary"];
+  }
+  const alphaTicket = await createTicket(alphaCustomer, "Alpha request");
+  const betaTicket = await createTicket(betaCustomer, "Beta request");
+
+  await page.goto(panelOrigin);
+  await page.getByLabel("Электронная почта", { exact: true }).fill(companies.betaCredentials.email);
+  await page.getByLabel("Пароль", { exact: true }).fill(companies.betaCredentials.password);
+  await page.getByRole("button", { name: "Войти", exact: true }).click();
+  await expect(page.getByText("Вы вошли как администратор.", { exact: true })).toBeVisible();
+  const ownTicket = page.getByRole("button", { name: new RegExp(betaTicket.id) });
+  await expect(ownTicket).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(alphaTicket.id) })).toHaveCount(0);
+  await ownTicket.click();
+  await expect(page.getByText("Клиент: Beta request", { exact: true })).toBeVisible();
+
+  await page.getByLabel("Тип сообщения", { exact: true }).selectOption("internal");
+  await page.getByLabel("Текст сообщения", { exact: true }).fill("Internal Beta note");
+  await page.getByRole("button", { name: "Сохранить заметку", exact: true }).click();
+  await expect(page.getByText("Внутренняя заметка: Internal Beta note", { exact: true })).toBeVisible();
+  await page.getByLabel("Тип сообщения", { exact: true }).selectOption("reply");
+  await page.getByLabel("Текст сообщения", { exact: true }).fill("Public Beta reply");
+  await page.getByRole("button", { name: "Отправить ответ", exact: true }).click();
+  await expect(page.getByText("Специалист: Public Beta reply", { exact: true })).toBeVisible();
+
+  const history = await betaCustomer.get(`/api/v1/public/conversations/${betaTicket.conversation_id}/messages`);
+  expect(history.status()).toBe(200);
+  expect((await history.json()).items.map((item: components["schemas"]["PublicMessage"]) => item.text)).toEqual(["Beta request", "Public Beta reply"]);
+  await page.reload();
+  await expect(ownTicket).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(alphaTicket.id) })).toHaveCount(0);
 });
