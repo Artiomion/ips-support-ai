@@ -145,11 +145,11 @@ isolationTest("@browser staff sees its own queue, sends a reply, and keeps notes
   await ownTicket.click();
   await expect(page.getByText("Клиент: Beta request", { exact: true })).toBeVisible();
 
-  await page.getByLabel("Тип сообщения", { exact: true }).selectOption("internal");
+  await page.getByRole("combobox", { name: /Тип сообщения/ }).selectOption("internal");
   await page.getByLabel("Текст сообщения", { exact: true }).fill("Internal Beta note");
   await page.getByRole("button", { name: "Сохранить заметку", exact: true }).click();
   await expect(page.getByText("Внутренняя заметка: Internal Beta note", { exact: true })).toBeVisible();
-  await page.getByLabel("Тип сообщения", { exact: true }).selectOption("reply");
+  await page.getByRole("combobox", { name: /Тип сообщения/ }).selectOption("reply");
   await page.getByLabel("Текст сообщения", { exact: true }).fill("Public Beta reply");
   await page.getByRole("button", { name: "Отправить ответ", exact: true }).click();
   await expect(page.getByText("Специалист: Public Beta reply", { exact: true })).toBeVisible();
