@@ -13,7 +13,10 @@ export function SupportActions({ api, conversationId, open, ticketId, onTicket, 
   const [error, setError] = useState(""); const [pollError, setPollError] = useState(""); const [notice, setNotice] = useState(""); const [email, setEmail] = useState(""); const [score, setScore] = useState("");
   const generation = useRef(0); const [rated, setRated] = useState(false); const [aiConfirmed, setAiConfirmed] = useState(false);
   const currentConversation = useRef(conversationId); currentConversation.current = conversationId;
-  useEffect(() => { setTicket(null); setError(""); setPollError(""); setNotice(""); setEmail(""); setScore(""); setRated(false); setAiConfirmed(false); generation.current++; }, [conversationId]);
+  useEffect(() => {
+    setTicket(null); setError(""); setPollError(""); setNotice(""); setEmail(""); setScore(""); setRated(false); setAiConfirmed(false); generation.current++;
+    return () => { generation.current++; };
+  }, [conversationId]);
   useEffect(() => {
     if (!open || !ticketId) return;
     const activeTicketId = ticketId;

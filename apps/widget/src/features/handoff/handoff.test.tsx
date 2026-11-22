@@ -6,6 +6,15 @@ const ticket = { id: "t1", conversation_id: "c1", status: "waiting_specialist", 
 function makeApi(): SupportApi { return { handoff: vi.fn().mockResolvedValue(ticket), ticket: vi.fn().mockResolvedValue(ticket), confirm: vi.fn(), reopen: vi.fn(), rate: vi.fn(), confirmAi: vi.fn(), email: vi.fn() }; }
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 describe("customer support actions", () => {
+  it("does not apply a handoff after its conversation view was removed", async () => {
+    const api = makeApi(); const onTicket = vi.fn(); let resolve!: (value: typeof ticket) => void;
+    vi.mocked(api.handoff).mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const view = render(<SupportActions api={api} conversationId="c1" open ticketId={null} onTicket={onTicket} />);
+    fireEvent.click(screen.getByRole("button", { name: "Позвать специалиста" }));
+    view.unmount();
+    await act(async () => { resolve(ticket); });
+    expect(onTicket).not.toHaveBeenCalled();
+  });
   it("does not apply a pending handoff to a different conversation", async () => {
     const api = makeApi(); const onTicket = vi.fn(); let resolve!: (value: typeof ticket) => void;
     vi.mocked(api.handoff).mockImplementation(() => new Promise((done) => { resolve = done; }));
