@@ -12,7 +12,8 @@ export function SupportActions({ api, conversationId, open, ticketId, onTicket, 
   const [ticket, setTicket] = useState<Ticket | null>(null); const [busy, setBusy] = useState(false); const busyRef = useRef(false);
   const [error, setError] = useState(""); const [pollError, setPollError] = useState(""); const [notice, setNotice] = useState(""); const [email, setEmail] = useState(""); const [score, setScore] = useState("");
   const generation = useRef(0); const [rated, setRated] = useState(false); const [aiConfirmed, setAiConfirmed] = useState(false);
-  useEffect(() => { setTicket(null); setError(""); setPollError(""); setNotice(""); setRated(false); setAiConfirmed(false); generation.current++; }, [conversationId]);
+  const currentConversation = useRef(conversationId); currentConversation.current = conversationId;
+  useEffect(() => { setTicket(null); setError(""); setPollError(""); setNotice(""); setEmail(""); setScore(""); setRated(false); setAiConfirmed(false); generation.current++; }, [conversationId]);
   useEffect(() => {
     if (!open || !ticketId) return;
     const activeTicketId = ticketId;
@@ -25,20 +26,21 @@ export function SupportActions({ api, conversationId, open, ticketId, onTicket, 
     void update(); const timer = setInterval(() => { void update(); }, 3000);
     return () => { active = false; clearInterval(timer); };
   }, [api, open, ticketId, conversationId]);
-  async function run(action: () => Promise<void>) {
+  async function run(action: (isCurrent: () => boolean) => Promise<void>) {
     if (busyRef.current) return; busyRef.current = true; generation.current++; setBusy(true); setError(""); setNotice("");
-    try { await action(); } catch { setError("Не удалось выполнить действие. Попробуйте ещё раз."); }
+    const actionGeneration = generation.current; const isCurrent = () => currentConversation.current === conversationId && actionGeneration === generation.current;
+    try { await action(isCurrent); } catch { if (isCurrent()) setError("Не удалось выполнить действие. Попробуйте ещё раз."); }
     finally { busyRef.current = false; setBusy(false); }
   }
   async function sendRating(event: FormEvent) { event.preventDefault(); const value = Number(score);
     if (!ticket || !Number.isInteger(value) || value < 1 || value > 5) { setError("Выберите оценку от 1 до 5."); return; }
-    await run(async () => { await api.rate(ticket.id, value); setRated(true); setNotice("Спасибо за оценку."); });
+    await run(async (isCurrent) => { await api.rate(ticket.id, value); if (isCurrent()) { setRated(true); setNotice("Спасибо за оценку."); } });
   }
   async function sendEmail(event: FormEvent) { event.preventDefault(); if (!email.trim()) return;
-    await run(async () => { await api.email(conversationId, email.trim()); setNotice("Письмо поставлено в очередь. Проверьте почту позже."); });
+    await run(async (isCurrent) => { await api.email(conversationId, email.trim()); if (isCurrent()) setNotice("Письмо поставлено в очередь. Проверьте почту позже."); });
   }
-  const handoff = () => run(async () => { const value = await api.handoff(conversationId); if (value.conversation_id !== conversationId) throw new Error("Conversation mismatch"); setTicket(value); onTicket(value.id); });
-  const change = (operation: (id: string) => Promise<Ticket>) => run(async () => { if (ticket) { const value = await operation(ticket.id); if (value.conversation_id !== conversationId) throw new Error("Conversation mismatch"); setTicket(value); } });
+  const handoff = () => run(async (isCurrent) => { const value = await api.handoff(conversationId); if (value.conversation_id !== conversationId) throw new Error("Conversation mismatch"); if (isCurrent()) { setTicket(value); onTicket(value.id); } });
+  const change = (operation: (id: string) => Promise<Ticket>) => run(async (isCurrent) => { if (ticket) { const value = await operation(ticket.id); if (value.conversation_id !== conversationId) throw new Error("Conversation mismatch"); if (isCurrent()) setTicket(value); } });
   return <section aria-label="Действия с обращением"><h2>Помощь специалиста</h2>
     {error && <p role="alert">{error}</p>}{pollError && <p role="alert">{pollError}</p>}{notice && <p role="status">{notice}</p>}
     {!ticketId && <button type="button" disabled={busy} onClick={() => { void handoff(); }}>Позвать специалиста</button>}
@@ -47,7 +49,7 @@ export function SupportActions({ api, conversationId, open, ticketId, onTicket, 
       {ticket.status === "resolved" && <><button type="button" disabled={busy} onClick={() => { void change(api.confirm); }}>Подтвердить решение</button><button type="button" disabled={busy} onClick={() => { void change(api.reopen); }}>Проблема не решена</button></>}
       {ticket.status === "closed" && !rated && <form onSubmit={(e) => { void sendRating(e); }}><label>Оценка от 1 до 5 <input type="number" min="1" max="5" step="1" required value={score} onChange={(e) => setScore(e.target.value)} /></label><button disabled={busy}>Отправить оценку</button></form>}
     </>}
-    {!ticketId && botMode && !aiConfirmed && <button type="button" disabled={busy} onClick={() => { void run(async () => { await api.confirmAi(conversationId); setAiConfirmed(true); onAiConfirmed?.(); setNotice("Решение подтверждено."); }); }}>Подтвердить ответ помощника</button>}
+    {!ticketId && botMode && !aiConfirmed && <button type="button" disabled={busy} onClick={() => { void run(async (isCurrent) => { await api.confirmAi(conversationId); if (isCurrent()) { setAiConfirmed(true); onAiConfirmed?.(); setNotice("Решение подтверждено."); } }); }}>Подтвердить ответ помощника</button>}
     <form onSubmit={(e) => { void sendEmail(e); }}><label>Email для продолжения <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label><button disabled={busy}>Получить ссылку</button></form>
   </section>;
 }

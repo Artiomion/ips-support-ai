@@ -6,6 +6,28 @@ const ticket = { id: "t1", conversation_id: "c1", status: "waiting_specialist", 
 function makeApi(): SupportApi { return { handoff: vi.fn().mockResolvedValue(ticket), ticket: vi.fn().mockResolvedValue(ticket), confirm: vi.fn(), reopen: vi.fn(), rate: vi.fn(), confirmAi: vi.fn(), email: vi.fn() }; }
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 describe("customer support actions", () => {
+  it("does not apply a pending handoff to a different conversation", async () => {
+    const api = makeApi(); const onTicket = vi.fn(); let resolve!: (value: typeof ticket) => void;
+    vi.mocked(api.handoff).mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const view = render(<SupportActions api={api} conversationId="c1" open ticketId={null} onTicket={onTicket} />);
+    fireEvent.click(screen.getByRole("button", { name: "Позвать специалиста" }));
+    view.rerender(<SupportActions api={api} conversationId="c2" open ticketId={null} onTicket={onTicket} />);
+    await act(async () => { resolve(ticket); });
+    expect(onTicket).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Ожидаем специалиста/)).toBeNull();
+  });
+  it("does not show a previous conversation's error or retain its email", async () => {
+    const api = makeApi(); let reject!: (reason: Error) => void;
+    vi.mocked(api.email).mockImplementation(() => new Promise((_, fail) => { reject = fail; }));
+    const onTicket = vi.fn();
+    const view = render(<SupportActions api={api} conversationId="c1" open ticketId={null} onTicket={onTicket} />);
+    fireEvent.change(screen.getByLabelText("Email для продолжения"), { target: { value: "client@example.com" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Получить ссылку" }).closest("form")!);
+    view.rerender(<SupportActions api={api} conversationId="c2" open ticketId={null} onTicket={onTicket} />);
+    await act(async () => { reject(new Error("unavailable")); });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect((screen.getByLabelText("Email для продолжения") as HTMLInputElement).value).toBe("");
+  });
   it("lets the customer request a person and displays waiting", async () => {
     const api = makeApi(); render(<SupportActions api={api} conversationId="c1" open ticketId={null} onTicket={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Позвать специалиста" }));
