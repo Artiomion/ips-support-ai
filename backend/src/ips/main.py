@@ -6,7 +6,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ips.conversations.router import public_router as conversations_public_router
 from ips.conversations.router import staff_router as conversations_staff_router
-from ips.core.composition import default_ports
+from ips.core.composition import default_ports, demo_ai_runner
 from ips.core.config import Settings
 from ips.core.errors import install_error_handlers
 from ips.knowledge.router import router as knowledge_router
@@ -59,7 +59,29 @@ def create_app(settings: Settings | None = None, ports: object = None) -> FastAP
             return JSONResponse(status_code=503, content={"status": "unavailable"})
         return JSONResponse(content={"status": "ok"})
 
+    configure_ai_lifespan(app, settings)
     return app
+
+
+def configure_ai_lifespan(app, settings):
+    from contextlib import asynccontextmanager
+
+    if settings.ai_runner_enabled and settings.ai_provider != "fake":
+        raise ValueError("AI runner currently supports only the fake demonstration provider")
+
+    @asynccontextmanager
+    async def lifespan(app):
+        if settings.ai_runner_enabled:
+            app.state.ai_runner = demo_ai_runner(app.state.engine, app.state.ports)
+            app.state.ai_runner.start()
+        try:
+            yield
+        finally:
+            if settings.ai_runner_enabled:
+                app.state.ai_runner.stop()
+            app.state.engine.dispose()
+
+    app.router.lifespan_context = lifespan
 
 
 app = create_app()

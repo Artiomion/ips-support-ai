@@ -11,13 +11,22 @@ from ips.core.ports import AnswerInput, CustomerPrincipal, Usage
 
 class Orchestrator:
     def __init__(
-        self, sessions, budget, search, provider, tickets=None, lease_seconds=90, tenant_id=None
+        self,
+        sessions,
+        budget,
+        search,
+        provider,
+        tickets=None,
+        lease_seconds=90,
+        tenant_id=None,
+        handoff_guard=None,
     ):
         self.sessions = sessions
         self.budget = budget
         self.search = search
         self.provider = provider
         self.tickets = tickets
+        self.handoff_guard = handoff_guard
         self.lease_seconds = max(30, lease_seconds)
         self.tenant_id = tenant_id
 
@@ -97,6 +106,10 @@ class Orchestrator:
             "attempt": run["attempts"],
         }
         with self.sessions.begin() as db:
+            if result is not None and result.needs_human and self.tickets is not None:
+                if self.handoff_guard is None:
+                    raise RuntimeError("handoff lock guard is not configured")
+                self.handoff_guard(db, run["tenant_id"])
             conversation = (
                 db.execute(
                     text("""SELECT * FROM conversations
