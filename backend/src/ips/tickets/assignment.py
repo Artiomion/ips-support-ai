@@ -113,8 +113,8 @@ def reassign_ticket(
         }
         if changes["status"] not in transitions.get(row["status"], set()):
             raise HTTPException(409, "Ticket changed or transition is not allowed")
-        if changes["status"] in {"in_progress", "waiting_customer"} and target_id is None:
-            raise HTTPException(409, "Active ticket requires an assignee")
+        if target_id is None:
+            raise HTTPException(409, "Status update requires an assignee")
     if "priority" in changes and changes["priority"] not in ("low", "normal", "high", "urgent"):
         raise HTTPException(422, "Invalid priority")
     if "category_id" in changes and changes["category_id"] is not None:

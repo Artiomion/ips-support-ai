@@ -493,3 +493,50 @@ def test_reassignment_and_status_change_apply_together(assignment_data):
         assert response.json()["status"] == "waiting_customer"
         assert response.json()["assignee_id"] == str(contexts[1].membership_id)
         assert response.json()["version"] == 3
+
+
+def test_resolve_cannot_release_assignee_before_reopen_and_claim(assignment_data):
+    from fastapi.testclient import TestClient
+
+    from ips.core.ports import CustomerPrincipal
+    from ips.main import create_app
+    from ips.platform.auth import require_csrf, tenant_context
+    from ips.platform.widget_api import customer_principal
+
+    engine, tenant, contexts, tickets = assignment_data
+    with engine.connect() as conn:
+        customer, widget, conversation = conn.execute(
+            text("SELECT customer_id,widget_id,id FROM conversations WHERE id=:id"),
+            {"id": tickets[0]},
+        ).one()
+    principal = CustomerPrincipal(tenant_id=tenant, customer_id=customer, widget_id=widget)
+    with Session(engine) as db, db.begin():
+        claim_ticket(db, contexts[0], tickets[0], 1)
+    app = create_app(Settings())
+    app.dependency_overrides[tenant_context] = lambda: contexts[0]
+    app.dependency_overrides[require_csrf] = lambda: None
+    app.dependency_overrides[customer_principal] = lambda: principal
+    with TestClient(app) as client:
+        path = f"/api/v1/tickets/{tickets[0]}"
+        invalid = client.put(
+            path, json={"expected_version": 2, "assignee_id": None, "status": "resolved"}
+        )
+        assert invalid.status_code == 409
+        current = client.get(path).json()
+        assert current["status"] == "in_progress" and current["version"] == 2
+        assert current["assignee_id"] == str(contexts[0].membership_id)
+        resolved = client.put(path, json={"expected_version": 2, "status": "resolved"})
+        assert resolved.status_code == 200, resolved.text
+        reopened = client.post(f"/api/v1/public/tickets/{tickets[0]}/reopen")
+        assert reopened.status_code == 200, reopened.text
+        assert reopened.json()["assignee_id"] == str(contexts[0].membership_id)
+        claim = client.post(f"{path}/claim", json={"expected_version": reopened.json()["version"]})
+        assert claim.status_code == 200, claim.text
+        assert claim.json()["assignee_id"] == str(contexts[0].membership_id)
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT mode FROM conversations WHERE id=:id"), {"id": conversation}
+                ).scalar_one()
+                == "human"
+            )
