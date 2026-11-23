@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from starlette.concurrency import run_in_threadpool
 
+from ips.conversations.outcomes import router as outcomes_router
 from ips.conversations.router import public_router as conversations_public_router
 from ips.conversations.router import staff_router as conversations_staff_router
 from ips.core.composition import default_ports, demo_ai_runner
@@ -42,6 +43,7 @@ def create_app(settings: Settings | None = None, ports: object = None) -> FastAP
     app.include_router(tickets_staff_router)
     app.include_router(conversations_public_router)
     app.include_router(conversations_staff_router)
+    app.include_router(outcomes_router)
     app.include_router(knowledge_router)
     engine = create_engine(
         settings.database_url, pool_pre_ping=True, connect_args={"connect_timeout": 2}

@@ -3,25 +3,19 @@
 from types import SimpleNamespace
 from uuid import uuid4
 
-from fastapi import HTTPException
-
+from ips.conversations.events import QueuedStaffReplyNotifications
+from ips.conversations.outcomes import OutcomeConversationService
 from ips.conversations.repository import ConversationRepository
-from ips.conversations.service import ConversationService
 from ips.tickets.service import TicketService
 
 
-class ConversationAdapter(ConversationService):
-    def confirm_human(self, uow, tenant_id, conversation_id):
-        # C07 owns outcome persistence; fail closed until it is implemented.
-        raise HTTPException(503, "Conversation outcome unavailable")
-
-    def metrics(self, uow, ctx, widget_id):
-        raise HTTPException(503, "Conversation metrics unavailable")
-
-
 def default_ports():
-    conversations = ConversationAdapter(ConversationRepository())
-    return SimpleNamespace(conversations=conversations, tickets=TicketService(conversations))
+    conversations = OutcomeConversationService(ConversationRepository())
+    tickets = TicketService(conversations)
+    conversations.tickets = tickets
+    return SimpleNamespace(
+        conversations=conversations, tickets=tickets, notifications=QueuedStaffReplyNotifications()
+    )
 
 
 def demo_ai_runner(engine, ports):

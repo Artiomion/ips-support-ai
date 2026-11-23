@@ -104,11 +104,17 @@ def test_real_app_connects_conversation_and_ticket_ports():
             )
         assert before == after == 1
         confirm = client.post(f"/api/v1/public/tickets/{ticket['id']}/confirm", headers=headers)
-        assert confirm.status_code == 503
+        assert confirm.status_code == 200
         with app.state.engine.connect() as connection:
             assert (
                 connection.execute(
                     text("SELECT status FROM tickets WHERE id=:id"), {"id": UUID(ticket["id"])}
                 ).scalar_one()
-                == "resolved"
+                == "closed"
+            )
+            assert (
+                connection.execute(
+                    text("SELECT outcome FROM conversations WHERE id=:id"), {"id": UUID(cid)}
+                ).scalar_one()
+                == "human_confirmed"
             )
