@@ -39,10 +39,13 @@ def test_settings_capabilities_and_audit_through_actual_app():
             == 403
         )
         changed = client.patch(
-            "/api/v1/organization", headers=headers, json={"name": "New", "language": "ru"}
+            "/api/v1/organization",
+            headers=headers,
+            json={"name": "New", "language": "ru", "retention_days": 1, "auto_close_hours": 1},
         )
         assert changed.status_code == 200, changed.text
         assert changed.json()["name"] == "New" and changed.json()["language"] == "ru"
+        assert changed.json()["retention_days"] == changed.json()["auto_close_hours"] == 1
         updated_member = client.patch(
             f"/api/v1/members/{register.json()['membership_id']}",
             headers=headers,
@@ -58,6 +61,46 @@ def test_settings_capabilities_and_audit_through_actual_app():
         )
         assert any(item["action"] == "member.update" for item in audit.json()["items"])
         assert "correct-horse-battery" not in audit.text and "@example.org" not in audit.text
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("retention_days", "0"),
+        ("auto_close_hours", "-1"),
+        ("retention_days", 0.0),
+        ("auto_close_hours", 1.5),
+    ],
+)
+def test_invalid_settings_update_preserves_saved_settings(field, value):
+    app = create_app(Settings())
+    with TestClient(app, raise_server_exceptions=False) as client:
+        origin = {"Origin": "http://localhost:5173"}
+        register = client.post(
+            "/api/v1/auth/register",
+            headers=origin,
+            json={
+                "organization_name": "Limits",
+                "email": f"{uuid4()}@example.org",
+                "password": "correct-horse-battery",
+            },
+        )
+        assert register.status_code == 201, register.text
+        headers = {**origin, "X-CSRF-Token": register.json()["csrf_token"]}
+        url = "/api/v1/organization"
+        initial = client.patch(
+            url, headers=headers, json={"retention_days": 14, "auto_close_hours": 48}
+        )
+        assert initial.status_code == 200, initial.text
+
+        rejected = client.patch(
+            url, headers=headers, json={"name": "Unexpected change", field: value}
+        )
+
+        assert rejected.status_code == 422, rejected.text
+        saved = client.get(url)
+        assert saved.status_code == 200, saved.text
+        assert saved.json() == initial.json()
 
 
 def test_two_reservations_last_slot_and_failure_release():

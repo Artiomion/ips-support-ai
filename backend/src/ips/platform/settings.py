@@ -45,16 +45,19 @@ class OrganizationSettings(BaseModel):
     auto_close_hours: int = Field(ge=1)
 
 
+PositiveIntegerUpdate = Annotated[
+    Annotated[int, Field(ge=1)] | None, WithJsonSchema({"type": "integer", "minimum": 1})
+]
+
+
 class OrganizationSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Annotated[str | None, WithJsonSchema({"type": "string"})] = None
     allow_general_knowledge: Annotated[bool | None, WithJsonSchema({"type": "boolean"})] = None
     language: Annotated[str | None, WithJsonSchema({"type": "string"})] = None
     ai_style: Annotated[str | None, WithJsonSchema({"type": "string"})] = None
-    retention_days: Annotated[int | None, WithJsonSchema({"type": "integer", "minimum": 1})] = None
-    auto_close_hours: Annotated[int | None, WithJsonSchema({"type": "integer", "minimum": 1})] = (
-        None
-    )
+    retention_days: PositiveIntegerUpdate = None
+    auto_close_hours: PositiveIntegerUpdate = None
 
     @field_validator(
         "name",
