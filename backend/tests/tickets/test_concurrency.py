@@ -466,3 +466,30 @@ def test_real_handoff_stays_queued_without_available_specialists(assignment_data
     with Session(engine) as db, db.begin():
         ticket = default_ports().tickets.escalate(db, principal, tickets[0], "Help", None, "normal")
         assert ticket.assignee_id is None and ticket.status == "waiting_specialist"
+
+
+def test_reassignment_and_status_change_apply_together(assignment_data):
+    from fastapi.testclient import TestClient
+
+    from ips.main import create_app
+    from ips.platform.auth import require_csrf, tenant_context
+
+    engine, _, contexts, tickets = assignment_data
+    with Session(engine) as db, db.begin():
+        claim_ticket(db, contexts[0], tickets[0], 1)
+    app = create_app(Settings())
+    app.dependency_overrides[tenant_context] = lambda: contexts[0]
+    app.dependency_overrides[require_csrf] = lambda: None
+    with TestClient(app) as client:
+        response = client.put(
+            f"/api/v1/tickets/{tickets[0]}",
+            json={
+                "expected_version": 2,
+                "assignee_id": str(contexts[1].membership_id),
+                "status": "waiting_customer",
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "waiting_customer"
+        assert response.json()["assignee_id"] == str(contexts[1].membership_id)
+        assert response.json()["version"] == 3

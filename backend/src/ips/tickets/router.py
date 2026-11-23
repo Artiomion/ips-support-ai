@@ -96,8 +96,6 @@ def update_ticket(
     db: Annotated[Session, Depends(get_session)],
 ) -> TicketSummary:
     if "assignee_id" in body.model_fields_set:
-        if "status" in body.model_fields_set:
-            raise HTTPException(503, "Combined reassignment and status update is not available yet")
         changes = body.model_dump(exclude_unset=True, exclude={"expected_version", "assignee_id"})
         result = reassign_ticket(
             db, ctx, ticket_id, body.expected_version, body.assignee_id, changes

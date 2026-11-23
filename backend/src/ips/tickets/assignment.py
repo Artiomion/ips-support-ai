@@ -106,6 +106,15 @@ def reassign_ticket(
         raise HTTPException(409, "Ticket cannot be reassigned")
     if target_id is not None and target is None:
         raise HTTPException(404, "Specialist unavailable")
+    if "status" in changes:
+        transitions = {
+            "in_progress": {"waiting_customer", "resolved"},
+            "waiting_customer": {"in_progress", "resolved"},
+        }
+        if changes["status"] not in transitions.get(row["status"], set()):
+            raise HTTPException(409, "Ticket changed or transition is not allowed")
+        if changes["status"] in {"in_progress", "waiting_customer"} and target_id is None:
+            raise HTTPException(409, "Active ticket requires an assignee")
     if "priority" in changes and changes["priority"] not in ("low", "normal", "high", "urgent"):
         raise HTTPException(422, "Invalid priority")
     if "category_id" in changes and changes["category_id"] is not None:
@@ -136,6 +145,10 @@ def reassign_ticket(
         if target_id == row["assignee_id"]
         else ("in_progress" if target_id is not None else "waiting_specialist"),
     }
+    if "status" in changes:
+        params["status"] = changes["status"]
+        params["is_resolved"] = changes["status"] == "resolved"
+        fields.append("resolved_at=CASE WHEN :is_resolved THEN now() ELSE NULL END")
     for key in ("priority", "category_id"):
         if key in changes:
             fields.append(f"{key}=:{key}")
