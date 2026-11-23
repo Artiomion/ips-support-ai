@@ -4,6 +4,7 @@ import json
 from uuid import uuid4
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from ips.ai.guardrails import SafeCustomerAssistant
 from ips.ai.history import CustomerContext
@@ -13,30 +14,48 @@ from ips.core.ports import CustomerPrincipal, Usage
 
 class Orchestrator:
     def __init__(
-        self, sessions, budget, search, provider, tickets=None, lease_seconds=90, tenant_id=None
+        self,
+        sessions,
+        budget,
+        search,
+        provider,
+        tickets=None,
+        lease_seconds=90,
+        tenant_id=None,
+        handoff_guard=None,
+        demo=False,
     ):
         self.sessions = sessions
         self.budget = budget
-        self.search = search
-        self.provider = provider
         self.customer_context = CustomerContext(sessions, search)
         self.guardrails = SafeCustomerAssistant(self.customer_context, provider)
         self.tickets = tickets
+        self.handoff_guard = handoff_guard
+        self.demo = demo
         self.lease_seconds = max(30, lease_seconds)
         self.tenant_id = tenant_id
 
     def _claim(self):
         with self.sessions.begin() as db:
+            # A locked earlier run must still block later runs in its conversation.
             row = (
                 db.execute(
                     text("""
                 SELECT r.* FROM ai_runs r
+                JOIN messages input ON input.tenant_id=r.tenant_id
+                  AND input.conversation_id=r.conversation_id AND input.id=r.input_message_id
                 WHERE (CAST(:tenant AS uuid) IS NULL OR r.tenant_id=:tenant)
                   AND (r.state='pending' OR (r.state='running' AND r.lease_until < now()))
                   AND NOT EXISTS (SELECT 1 FROM ai_runs other
+                    JOIN messages previous ON previous.tenant_id=other.tenant_id
+                      AND previous.conversation_id=other.conversation_id
+                      AND previous.id=other.input_message_id
                     WHERE other.tenant_id=r.tenant_id AND other.conversation_id=r.conversation_id
-                      AND other.id<>r.id AND other.state='running' AND other.lease_until>=now())
-                ORDER BY r.id FOR UPDATE SKIP LOCKED LIMIT 1
+                      AND other.id<>r.id
+                      AND ((other.state='running' AND other.lease_until>=now())
+                        OR (previous.seq<input.seq AND (other.state='pending'
+                          OR (other.state='running' AND other.lease_until<now())))))
+                ORDER BY input.created_at, r.id FOR UPDATE OF r SKIP LOCKED LIMIT 1
             """),
                     {"tenant": self.tenant_id},
                 )
@@ -78,7 +97,7 @@ class Orchestrator:
         with self.sessions() as db:
             row = (
                 db.execute(
-                    text("""SELECT c.mode,c.version,c.customer_id,c.widget_id,m.text
+                    text("""SELECT c.mode,c.version,c.customer_id,c.widget_id
                 FROM conversations c JOIN messages m ON m.tenant_id=c.tenant_id
                 AND m.conversation_id=c.id AND m.id=:message AND m.kind='customer'
                 WHERE c.tenant_id=:tenant AND c.id=:conversation"""),
@@ -93,7 +112,7 @@ class Orchestrator:
             )
             return dict(row)
 
-    def _finish(self, run, state, error=None, result=None, context=None):
+    def _finish(self, run, state, error=None, result=None, context=None) -> bool:
         params = {
             "tenant": run["tenant_id"],
             "conversation": run["conversation_id"],
@@ -101,6 +120,10 @@ class Orchestrator:
             "attempt": run["attempts"],
         }
         with self.sessions.begin() as db:
+            if result is not None and result.needs_human and self.tickets is not None:
+                if self.handoff_guard is None:
+                    raise RuntimeError("handoff lock guard is not configured")
+                self.handoff_guard(db, run["tenant_id"])
             conversation = (
                 db.execute(
                     text("""SELECT * FROM conversations
@@ -116,7 +139,7 @@ class Orchestrator:
                 params,
             ).first()
             if current is None:
-                return
+                return False
             if (
                 conversation["mode"] != "bot"
                 or conversation["version"] != run["generation_version"]
@@ -158,12 +181,14 @@ class Orchestrator:
                 WHERE id=:id AND tenant_id=:tenant AND attempts=:attempt"""),
                 {**params, "state": state, "error": error},
             )
+        return True
 
     def run_once(self):
         run = self._claim()
         if run is None:
             return False
         reservation = None
+        finished = False
         failed = True
         try:
             context = self._input(run)
@@ -182,11 +207,16 @@ class Orchestrator:
             answer = validated_answer(
                 self.guardrails.answer_or_raise(question, history, snippets), snippets
             )
-            self._finish(run, "completed", result=answer, context=context)
+            if self.demo:
+                answer = answer.model_copy(update={"text": f"Демо-режим: {answer.text}"})
+            finished = self._finish(run, "completed", result=answer, context=context)
             failed = False
+        except OperationalError:
+            # A database interruption leaves the lease available for recovery.
+            raise
         except Exception:  # noqa: BLE001 - do not expose provider data or secrets.
-            self._finish(run, "failed", error="generation_failed")
+            finished = self._finish(run, "failed", error="generation_failed")
         finally:
-            if reservation is not None:
+            if finished and reservation is not None:
                 self.budget.settle(reservation, Usage(input_tokens=0, output_tokens=0), failed)
         return True
