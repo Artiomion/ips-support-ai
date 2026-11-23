@@ -29,7 +29,7 @@ class KnowledgeService:
         return self.repository.save_revision(
             uow,
             article,
-            {"title": previous["title"], "body": previous["body"]},
+            {"title": previous["title"], "body": previous["body"], "status": "draft"},
             actor_id,
             "restore",
         )

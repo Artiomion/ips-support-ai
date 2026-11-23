@@ -67,6 +67,30 @@ def test_import_rejects_invalid_utf8_and_oversized():
         assert error.value.code == code
 
 
+def test_restoring_old_internal_content_requires_republication():
+    tenant, article_id, actor_id, section_id = (uuid4() for _ in range(4))
+    repo = FakeRepository()
+    repo.articles[article_id] = {
+        "id": article_id,
+        "tenant_id": tenant,
+        "section_id": section_id,
+        "title": "Guide",
+        "body": "Safe public content",
+        "visibility": "public",
+        "status": "published",
+        "revision": 2,
+    }
+    repo.revisions[(tenant, article_id, 1)] = {
+        "title": "Internal",
+        "body": "Private content",
+        "revision": 1,
+    }
+    restored = KnowledgeService(repo).restore(None, tenant, actor_id, article_id, 1)
+    assert restored["revision"] == 3
+    assert restored["body"] == "Private content"
+    assert restored["status"] == "draft"
+
+
 def test_knowledge_routes_match_openapi():
     import json
     from pathlib import Path
@@ -150,19 +174,49 @@ def test_postgres_revisions_privacy_and_imports():
                     "Refund policy",
                 ]
                 repo = KnowledgeRepository()
+                assert restored.json()["status"] == "draft"
+                assert not repo.public_candidates(db, tenant, [UUID(section_id)], "Refund")
+                published = client.patch(path, json={"expected_revision": 3, "status": "published"})
+                assert published.status_code == 200
                 assert len(repo.public_candidates(db, tenant, [UUID(section_id)], "Refund")) == 1
                 assert not repo.public_candidates(db, other, [UUID(section_id)], "Refund")
                 changed = client.patch(
-                    path, json={"expected_revision": 3, "visibility": "internal"}
+                    path, json={"expected_revision": 4, "visibility": "internal"}
                 )
                 assert changed.status_code == 200, changed.text
                 assert not repo.public_candidates(db, tenant, [UUID(section_id)], "Refund")
                 changed = client.patch(
                     path,
-                    json={"expected_revision": 4, "visibility": "public", "status": "disabled"},
+                    json={"expected_revision": 5, "visibility": "public", "status": "disabled"},
                 )
                 assert changed.status_code == 200, changed.text
                 assert not repo.public_candidates(db, tenant, [UUID(section_id)], "Refund")
+                private = client.post(
+                    "/api/v1/knowledge/articles",
+                    json={
+                        **payload,
+                        "title": "Secret",
+                        "body": "Private marker",
+                        "visibility": "internal",
+                    },
+                )
+                assert private.status_code == 201
+                private_path = "/api/v1/knowledge/articles/" + private.json()["id"]
+                clean = client.patch(
+                    private_path,
+                    json={
+                        "expected_revision": 1,
+                        "title": "Public",
+                        "body": "Clean text",
+                        "visibility": "public",
+                    },
+                )
+                assert clean.status_code == 200
+                recovered = client.post(private_path + "/restore/1")
+                assert recovered.status_code == 200
+                assert recovered.json()["body"] == "Private marker"
+                assert recovered.json()["status"] == "draft"
+                assert not repo.public_candidates(db, tenant, [UUID(section_id)], "Private marker")
                 for content, expected_state, error in (
                     (b"Valid UTF-8", "ready", None),
                     (b"\xff", "failed", "invalid_utf8"),
