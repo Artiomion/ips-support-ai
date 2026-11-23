@@ -1,5 +1,3 @@
-from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -22,22 +20,7 @@ from ips.tickets.router import staff_router as tickets_staff_router
 
 def create_app(settings: Settings | None = None, ports: object = None) -> FastAPI:
     settings = settings or Settings()
-    if settings.ai_runner_enabled and settings.ai_provider != "fake":
-        raise ValueError("AI runner currently supports only the fake demonstration provider")
-
-    @asynccontextmanager
-    async def lifespan(app):
-        if settings.ai_runner_enabled:
-            app.state.ai_runner = demo_ai_runner(app.state.engine, app.state.ports)
-            app.state.ai_runner.start()
-        try:
-            yield
-        finally:
-            if settings.ai_runner_enabled:
-                app.state.ai_runner.stop()
-            app.state.engine.dispose()
-
-    app = FastAPI(title="IPS Support API", lifespan=lifespan)
+    app = FastAPI(title="IPS Support API")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.web_origin],
@@ -76,7 +59,29 @@ def create_app(settings: Settings | None = None, ports: object = None) -> FastAP
             return JSONResponse(status_code=503, content={"status": "unavailable"})
         return JSONResponse(content={"status": "ok"})
 
+    configure_ai_lifespan(app, settings)
     return app
+
+
+def configure_ai_lifespan(app, settings):
+    from contextlib import asynccontextmanager
+
+    if settings.ai_runner_enabled and settings.ai_provider != "fake":
+        raise ValueError("AI runner currently supports only the fake demonstration provider")
+
+    @asynccontextmanager
+    async def lifespan(app):
+        if settings.ai_runner_enabled:
+            app.state.ai_runner = demo_ai_runner(app.state.engine, app.state.ports)
+            app.state.ai_runner.start()
+        try:
+            yield
+        finally:
+            if settings.ai_runner_enabled:
+                app.state.ai_runner.stop()
+            app.state.engine.dispose()
+
+    app.router.lifespan_context = lifespan
 
 
 app = create_app()
