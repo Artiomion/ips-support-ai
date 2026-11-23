@@ -19,6 +19,7 @@ def assignment_data():
     users = [uuid4(), uuid4()]
     members = [uuid4(), uuid4()]
     tickets = [uuid4(), uuid4()]
+    widget, customer = uuid4(), uuid4()
     with engine.begin() as conn:
         conn.execute(text("INSERT INTO organizations (id,name) VALUES (:id,'B05')"), {"id": tenant})
         for user, member in zip(users, members, strict=True):
@@ -34,12 +35,28 @@ def assignment_data():
                 ),
                 {"id": member, "tenant": tenant, "user": user},
             )
+        conn.execute(
+            text(
+                "INSERT INTO widgets (id,tenant_id,name,public_key,color,greeting,allowed_origins) VALUES (:id,:tenant,'Widget',:key,'#123456','Hello','{}')"
+            ),
+            {"id": widget, "tenant": tenant, "key": str(widget)},
+        )
+        conn.execute(
+            text("INSERT INTO customers (id,tenant_id) VALUES (:id,:tenant)"),
+            {"id": customer, "tenant": tenant},
+        )
         for ticket in tickets:
+            conn.execute(
+                text(
+                    "INSERT INTO conversations (id,tenant_id,widget_id,customer_id) VALUES (:id,:tenant,:widget,:customer)"
+                ),
+                {"id": ticket, "tenant": tenant, "widget": widget, "customer": customer},
+            )
             conn.execute(
                 text(
                     "INSERT INTO tickets (id,tenant_id,conversation_id,status,priority) VALUES (:id,:tenant,:conversation,'waiting_specialist','normal')"
                 ),
-                {"id": ticket, "tenant": tenant, "conversation": uuid4()},
+                {"id": ticket, "tenant": tenant, "conversation": ticket},
             )
     contexts = [
         TenantContext(tenant_id=tenant, user_id=u, membership_id=m, role="specialist")
@@ -48,6 +65,9 @@ def assignment_data():
     yield engine, tenant, contexts, tickets
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM tickets WHERE tenant_id=:tenant"), {"tenant": tenant})
+        conn.execute(text("DELETE FROM conversations WHERE tenant_id=:tenant"), {"tenant": tenant})
+        conn.execute(text("DELETE FROM customers WHERE tenant_id=:tenant"), {"tenant": tenant})
+        conn.execute(text("DELETE FROM widgets WHERE tenant_id=:tenant"), {"tenant": tenant})
         conn.execute(text("DELETE FROM memberships WHERE tenant_id=:tenant"), {"tenant": tenant})
         conn.execute(text("DELETE FROM users WHERE id IN (:a,:b)"), {"a": users[0], "b": users[1]})
         conn.execute(text("DELETE FROM organizations WHERE id=:tenant"), {"tenant": tenant})
@@ -179,8 +199,11 @@ def test_reopen_and_claim_compete_for_same_capacity(assignment_data):
     from ips.tickets.service import TicketService
 
     engine, tenant, contexts, tickets = assignment_data
-    customer, widget, conversation = uuid4(), uuid4(), uuid4()
     with engine.begin() as conn:
+        customer, widget, conversation = conn.execute(
+            text("SELECT customer_id,widget_id,id FROM conversations WHERE id=:id"),
+            {"id": tickets[0]},
+        ).one()
         conn.execute(
             text(
                 "UPDATE tickets SET conversation_id=:conversation, status='resolved', assignee_id=:member WHERE id=:ticket"
@@ -242,8 +265,11 @@ def test_reopen_rejects_when_assignee_is_already_at_capacity(assignment_data):
     from ips.tickets.service import TicketService
 
     engine, tenant, contexts, tickets = assignment_data
-    customer, widget, conversation = uuid4(), uuid4(), uuid4()
     with engine.begin() as conn:
+        customer, widget, conversation = conn.execute(
+            text("SELECT customer_id,widget_id,id FROM conversations WHERE id=:id"),
+            {"id": tickets[0]},
+        ).one()
         conn.execute(
             text(
                 "UPDATE tickets SET conversation_id=:conversation,status='resolved',assignee_id=:member WHERE id=:ticket"
@@ -324,14 +350,13 @@ def test_claim_and_release_are_available_over_authenticated_http(assignment_data
         assert result.json()["assignee_id"] == str(contexts[0].membership_id)
         assert client.post(claim_url, json={"expected_version": 1}).status_code == 409
         url = f"/api/v1/tickets/{tickets[0]}"
-        assert (
-            client.put(
-                url, json={"expected_version": 2, "assignee_id": None, "priority": "high"}
-            ).status_code
-            == 503
+        released = client.put(
+            url, json={"expected_version": 2, "assignee_id": None, "priority": "high"}
         )
-        released = client.put(url, json={"expected_version": 2, "assignee_id": None})
-        assert released.status_code == 200 and released.json()["status"] == "waiting_specialist"
+        assert released.status_code == 200, released.text
+        assert released.json()["status"] == "waiting_specialist"
+        assert released.json()["priority"] == "high"
+        assert released.json()["version"] == 3
 
 
 def test_reassign_and_claim_share_capacity_lock(assignment_data):
@@ -366,3 +391,78 @@ def test_reassign_and_claim_share_capacity_lock(assignment_data):
             {"tenant": tenant, "member": contexts[1].membership_id},
         ).scalar_one()
         assert count == 1
+
+
+def test_real_handoff_assigns_available_specialist_and_repeat_is_idempotent(assignment_data):
+    from ips.core.composition import default_ports
+    from ips.core.ports import CustomerPrincipal
+
+    engine, tenant, contexts, tickets = assignment_data
+    with engine.begin() as conn:
+        customer, widget = conn.execute(
+            text("SELECT customer_id,widget_id FROM conversations WHERE id=:id"),
+            {"id": tickets[0]},
+        ).one()
+        conn.execute(text("DELETE FROM tickets WHERE id=:id"), {"id": tickets[0]})
+        conn.execute(
+            text("UPDATE memberships SET available=false WHERE id=:id"),
+            {"id": contexts[1].membership_id},
+        )
+    principal = CustomerPrincipal(tenant_id=tenant, customer_id=customer, widget_id=widget)
+    tickets_port = default_ports().tickets
+    with Session(engine) as db, db.begin():
+        ticket = tickets_port.escalate(db, principal, tickets[0], "Help", None, "normal")
+        assert ticket.assignee_id == contexts[0].membership_id
+        assert ticket.status == "in_progress"
+    with Session(engine) as db, db.begin():
+        repeated = tickets_port.escalate(db, principal, tickets[0], "Help", None, "normal")
+        assert repeated.id == ticket.id and repeated.version == ticket.version
+
+
+def test_combined_reassignment_rejects_foreign_category_without_partial_update(assignment_data):
+    from fastapi.testclient import TestClient
+
+    from ips.main import create_app
+    from ips.platform.auth import require_csrf, tenant_context
+
+    engine, tenant, contexts, tickets = assignment_data
+    with Session(engine) as db, db.begin():
+        claim_ticket(db, contexts[0], tickets[0], 1)
+    app = create_app(Settings())
+    app.dependency_overrides[tenant_context] = lambda: contexts[0]
+    app.dependency_overrides[require_csrf] = lambda: None
+    with TestClient(app) as client:
+        result = client.put(
+            f"/api/v1/tickets/{tickets[0]}",
+            json={"expected_version": 2, "assignee_id": None, "category_id": str(uuid4())},
+        )
+        assert result.status_code == 404
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT assignee_id,status,version FROM tickets WHERE tenant_id=:tenant AND id=:id"
+            ),
+            {"tenant": tenant, "id": tickets[0]},
+        ).one()
+        assert row.assignee_id == contexts[0].membership_id
+        assert row.status == "in_progress" and row.version == 2
+
+
+def test_real_handoff_stays_queued_without_available_specialists(assignment_data):
+    from ips.core.composition import default_ports
+    from ips.core.ports import CustomerPrincipal
+
+    engine, tenant, _, tickets = assignment_data
+    with engine.begin() as conn:
+        customer, widget = conn.execute(
+            text("SELECT customer_id,widget_id FROM conversations WHERE id=:id"),
+            {"id": tickets[0]},
+        ).one()
+        conn.execute(text("DELETE FROM tickets WHERE id=:id"), {"id": tickets[0]})
+        conn.execute(
+            text("UPDATE memberships SET available=false WHERE tenant_id=:id"), {"id": tenant}
+        )
+    principal = CustomerPrincipal(tenant_id=tenant, customer_id=customer, widget_id=widget)
+    with Session(engine) as db, db.begin():
+        ticket = default_ports().tickets.escalate(db, principal, tickets[0], "Help", None, "normal")
+        assert ticket.assignee_id is None and ticket.status == "waiting_specialist"

@@ -68,8 +68,14 @@ def claim_ticket(
 
 
 def reassign_ticket(
-    db: Session, ctx: TenantContext, ticket_id: UUID, expected_version: int, target_id: UUID | None
+    db: Session,
+    ctx: TenantContext,
+    ticket_id: UUID,
+    expected_version: int,
+    target_id: UUID | None,
+    changes: dict | None = None,
 ) -> TicketSummary:
+    changes = changes or {}
     # A target membership is locked before the ticket, as in claim and routing.
     target = None
     if target_id is not None:
@@ -100,9 +106,18 @@ def reassign_ticket(
         raise HTTPException(409, "Ticket cannot be reassigned")
     if target_id is not None and target is None:
         raise HTTPException(404, "Specialist unavailable")
-    if target_id == row["assignee_id"]:
+    if "priority" in changes and changes["priority"] not in ("low", "normal", "high", "urgent"):
+        raise HTTPException(422, "Invalid priority")
+    if "category_id" in changes and changes["category_id"] is not None:
+        category = db.execute(
+            text("SELECT id FROM categories WHERE tenant_id=:tenant AND id=:id FOR KEY SHARE"),
+            {"tenant": ctx.tenant_id, "id": changes["category_id"]},
+        ).scalar_one_or_none()
+        if category is None:
+            raise HTTPException(404, "Category unavailable")
+    if target_id == row["assignee_id"] and not changes:
         return TicketSummary.model_validate({key: row[key] for key in TicketSummary.model_fields})
-    if target is not None:
+    if target is not None and target_id != row["assignee_id"]:
         if not target["available"]:
             raise HTTPException(409, "Specialist unavailable")
         active = db.execute(
@@ -112,16 +127,27 @@ def reassign_ticket(
         ).scalar_one()
         if active >= target["max_active"]:
             raise HTTPException(409, "Specialist at capacity")
+    fields = ["assignee_id=:member", "status=:status", "version=version+1", "updated_at=now()"]
+    params = {
+        "tenant": ctx.tenant_id,
+        "id": ticket_id,
+        "member": target_id,
+        "status": row["status"]
+        if target_id == row["assignee_id"]
+        else ("in_progress" if target_id is not None else "waiting_specialist"),
+    }
+    for key in ("priority", "category_id"):
+        if key in changes:
+            fields.append(f"{key}=:{key}")
+            params[key] = changes[key]
     updated = (
         db.execute(
-            text("""UPDATE tickets SET assignee_id=:member,status=:status,
-        version=version+1,updated_at=now() WHERE tenant_id=:tenant AND id=:id RETURNING *"""),
-            {
-                "tenant": ctx.tenant_id,
-                "id": ticket_id,
-                "member": target_id,
-                "status": "in_progress" if target_id is not None else "waiting_specialist",
-            },
+            text(
+                "UPDATE tickets SET "
+                + ", ".join(fields)
+                + " WHERE tenant_id=:tenant AND id=:id RETURNING *"
+            ),
+            params,
         )
         .mappings()
         .one()

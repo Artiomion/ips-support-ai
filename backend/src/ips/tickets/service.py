@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ips.core.ports import ConversationPort, CustomerPrincipal, TenantContext, TicketSummary
+from ips.tickets.routing import route_ticket
 
 
 class TicketService:
@@ -28,6 +29,11 @@ class TicketService:
             and principal.conversation_scope != conversation_id
         ):
             raise HTTPException(404, "Conversation unavailable")
+        # Capacity paths lock memberships before conversations and tickets.
+        uow.execute(
+            text("SELECT id FROM memberships WHERE tenant_id=:tenant ORDER BY id FOR UPDATE"),
+            {"tenant": principal.tenant_id},
+        ).all()
         state = self.conversations.lock_for_handoff(uow, principal.tenant_id, conversation_id)
         if (state.tenant_id, state.customer_id, state.widget_id) != (
             principal.tenant_id,
@@ -46,7 +52,8 @@ class TicketService:
             .mappings()
             .first()
         )
-        if row is None:
+        created = row is None
+        if created:
             category_id = None
             if category:
                 category_id = uow.execute(
@@ -69,6 +76,10 @@ class TicketService:
                 .one()
             )
         self.conversations.mark_human(uow, state)
+        if created:
+            assigned = route_ticket(uow, principal.tenant_id, row["id"], row["version"])
+            if assigned is not None:
+                return assigned
         return TicketSummary.model_validate({key: row[key] for key in TicketSummary.model_fields})
 
     def has_active(self, uow: Session, tenant_id: UUID, conversation_id: UUID) -> bool:
@@ -125,6 +136,7 @@ class TicketService:
     def update_details(
         uow: Session, ctx: TenantContext, ticket_id: UUID, expected_version: int, changes: dict
     ) -> TicketSummary:
+        # Keep the version check and all requested changes under the same row lock.
         row = TicketService._ticket(uow, ctx.tenant_id, ticket_id, lock=True)
         if ctx.role != "admin" and row["assignee_id"] != ctx.membership_id:
             raise HTTPException(403, "Ticket is assigned to another specialist")

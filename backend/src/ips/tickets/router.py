@@ -96,9 +96,12 @@ def update_ticket(
     db: Annotated[Session, Depends(get_session)],
 ) -> TicketSummary:
     if "assignee_id" in body.model_fields_set:
-        if body.model_fields_set & {"priority", "category_id", "status"}:
-            raise HTTPException(503, "Combined reassignment is not available yet")
-        result = reassign_ticket(db, ctx, ticket_id, body.expected_version, body.assignee_id)
+        if "status" in body.model_fields_set:
+            raise HTTPException(503, "Combined reassignment and status update is not available yet")
+        changes = body.model_dump(exclude_unset=True, exclude={"expected_version", "assignee_id"})
+        result = reassign_ticket(
+            db, ctx, ticket_id, body.expected_version, body.assignee_id, changes
+        )
     else:
         changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
         result = TicketService.update_details(db, ctx, ticket_id, body.expected_version, changes)
@@ -162,6 +165,7 @@ def get_staff_ticket(
 
 
 def service_for(request: Request) -> TicketService:
+    # The conversation port is required to verify customer ownership.
     port = getattr(request.app.state.ports, "conversations", None)
     if port is None:
         raise HTTPException(503, "Conversation service unavailable")

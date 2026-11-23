@@ -35,6 +35,21 @@ def context():
         conn.execute(
             text("INSERT INTO organizations (id, name) VALUES (:id, 'B04 test')"), {"id": tenant}
         )
+        conn.execute(
+            text("""INSERT INTO widgets (id,tenant_id,name,public_key,color,greeting,allowed_origins)
+                VALUES (:id,:tenant,'test',:key,'#123456','hello',ARRAY['https://site.example'])"""),
+            {"id": widget, "tenant": tenant, "key": str(uuid4())},
+        )
+        conn.execute(
+            text("INSERT INTO customers (id,tenant_id) VALUES (:id,:tenant)"),
+            {"id": customer, "tenant": tenant},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO conversations (id,tenant_id,widget_id,customer_id) VALUES (:id,:tenant,:widget,:customer)"
+            ),
+            {"id": conversation, "tenant": tenant, "widget": widget, "customer": customer},
+        )
     principal = CustomerPrincipal(tenant_id=tenant, customer_id=customer, widget_id=widget)
     fake = FakeConversations(
         ConversationState(
@@ -49,6 +64,9 @@ def context():
     yield engine, principal, fake
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM tickets WHERE tenant_id=:tenant"), {"tenant": tenant})
+        conn.execute(text("DELETE FROM conversations WHERE tenant_id=:tenant"), {"tenant": tenant})
+        conn.execute(text("DELETE FROM customers WHERE tenant_id=:tenant"), {"tenant": tenant})
+        conn.execute(text("DELETE FROM widgets WHERE tenant_id=:tenant"), {"tenant": tenant})
         conn.execute(text("DELETE FROM organizations WHERE id=:tenant"), {"tenant": tenant})
     engine.dispose()
 
@@ -234,7 +252,7 @@ def test_ticket_http_requires_authentication_and_unavailable_port_fails_closed(c
     from ips.platform.widget_api import customer_principal
 
     _, principal, fake = context
-    app = create_app(Settings())
+    app = create_app(Settings(), ports=object())
     with TestClient(app) as client:
         url = f"/api/v1/public/conversations/{fake.state.id}/handoff"
         assert client.post(url, json={"reason": "Help"}).status_code == 401
@@ -395,6 +413,18 @@ def test_public_handoff_authenticates_real_customer_bearer():
             mode="bot",
             version=1,
         )
+        with app.state.engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO conversations (id,tenant_id,widget_id,customer_id) VALUES (:id,:tenant,:widget,:customer)"
+                ),
+                {
+                    "id": conversation,
+                    "tenant": state.tenant_id,
+                    "widget": state.widget_id,
+                    "customer": state.customer_id,
+                },
+            )
         app.state.ports = type("Ports", (), {"conversations": FakeConversations(state)})()
         path = f"/api/v1/public/conversations/{conversation}/handoff"
         assert (
@@ -497,7 +527,7 @@ def test_ticket_details_are_atomic_and_category_is_tenant_scoped(context):
                     url,
                     json={"expected_version": 3, "assignee_id": str(uuid4()), "priority": "low"},
                 ).status_code
-                == 503
+                == 409
             )
             assert client.get(url).json()["priority"] == "urgent"
     finally:
