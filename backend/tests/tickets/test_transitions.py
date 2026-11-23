@@ -64,6 +64,8 @@ def context():
     yield engine, principal, fake
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM tickets WHERE tenant_id=:tenant"), {"tenant": tenant})
+        conn.execute(text("DELETE FROM ai_runs WHERE tenant_id=:tenant"), {"tenant": tenant})
+        conn.execute(text("DELETE FROM messages WHERE tenant_id=:tenant"), {"tenant": tenant})
         conn.execute(text("DELETE FROM conversations WHERE tenant_id=:tenant"), {"tenant": tenant})
         conn.execute(text("DELETE FROM customers WHERE tenant_id=:tenant"), {"tenant": tenant})
         conn.execute(text("DELETE FROM widgets WHERE tenant_id=:tenant"), {"tenant": tenant})
@@ -573,3 +575,102 @@ def test_concurrent_ticket_updates_do_not_overwrite_each_other(context):
     with ThreadPoolExecutor(max_workers=2) as pool:
         outcomes = list(pool.map(update, ["high", "urgent"]))
     assert sorted(outcomes) == [2, 409]
+
+
+def test_real_conversation_handoff_and_customer_message_preserve_ticket_invariants(context):
+    from fastapi.testclient import TestClient
+
+    from ips.main import create_app
+    from ips.platform.widget_api import customer_principal
+
+    engine, principal, fake = context
+    app = create_app(Settings())
+    app.dependency_overrides[customer_principal] = lambda: principal
+    conversation_id = fake.state.id
+    handoff_path = f"/api/v1/public/conversations/{conversation_id}/handoff"
+    message_path = f"/api/v1/public/conversations/{conversation_id}/messages"
+    with TestClient(app) as client:
+        first = client.post(handoff_path, json={"reason": "Help"})
+        assert first.status_code == 200, first.text
+        ticket = first.json()
+        repeated = client.post(handoff_path, json={"reason": "Help again"})
+        assert repeated.status_code == 200 and repeated.json()["id"] == ticket["id"]
+        app.dependency_overrides[customer_principal] = lambda: principal.model_copy(
+            update={"customer_id": uuid4()}
+        )
+        assert client.post(handoff_path, json={"reason": "Help"}).status_code == 404
+        app.dependency_overrides[customer_principal] = lambda: principal
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE tickets SET status='waiting_customer' WHERE id=:id"),
+                {"id": ticket["id"]},
+            )
+        message = {"client_message_id": str(uuid4()), "text": "More details"}
+        assert client.post(message_path, json=message).status_code == 201
+        assert client.post(message_path, json=message).status_code == 200
+        with engine.begin() as conn:
+            row = conn.execute(
+                text("SELECT status, version FROM tickets WHERE id=:id"), {"id": ticket["id"]}
+            ).one()
+            assert row.status == "in_progress" and row.version == ticket["version"] + 1
+            assert (
+                conn.execute(
+                    text("SELECT mode FROM conversations WHERE id=:id"), {"id": conversation_id}
+                ).scalar_one()
+                == "human"
+            )
+            conn.execute(
+                text("UPDATE tickets SET status='closed' WHERE id=:id"), {"id": ticket["id"]}
+            )
+        new_ticket = client.post(handoff_path, json={"reason": "New question"})
+        assert new_ticket.status_code == 200 and new_ticket.json()["id"] != ticket["id"]
+
+
+def test_real_reopen_races_handoff_without_creating_two_active_tickets(context):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from ips.core.composition import default_ports
+
+    engine, principal, fake = context
+    conversation_id = fake.state.id
+    service = default_ports().tickets
+    with Session(engine) as db, db.begin():
+        original = service.escalate(db, principal, conversation_id, "Help", None, "normal")
+        db.execute(text("UPDATE tickets SET status='resolved' WHERE id=:id"), {"id": original.id})
+    start = Barrier(2, timeout=5)
+
+    def run(operation):
+        with Session(engine) as db:
+            start.wait()
+            try:
+                result = (
+                    service.reopen(db, principal, original.id)
+                    if operation == "reopen"
+                    else service.escalate(
+                        db, principal, conversation_id, "Help again", None, "normal"
+                    )
+                )
+                db.commit()
+                return result.id
+            except HTTPException as error:
+                db.rollback()
+                assert error.status_code == 409
+                return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(run, ("reopen", "handoff")))
+    with engine.connect() as conn:
+        active = (
+            conn.execute(
+                text(
+                    "SELECT id FROM tickets WHERE tenant_id=:tenant AND conversation_id=:id AND status NOT IN ('resolved','closed')"
+                ),
+                {"tenant": principal.tenant_id, "id": conversation_id},
+            )
+            .scalars()
+            .all()
+        )
+    assert len(active) == 1
+    assert outcomes[1] == active[0]
+    assert outcomes[0] is None or outcomes[0] == active[0]
