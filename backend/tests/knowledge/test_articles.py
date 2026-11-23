@@ -264,7 +264,8 @@ def test_postgres_revisions_privacy_and_imports():
 
 def test_concurrent_updates_reject_stale_revision():
     from concurrent.futures import ThreadPoolExecutor
-    from threading import Barrier
+    from queue import Queue
+    from time import monotonic, sleep
 
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import Session
@@ -274,6 +275,8 @@ def test_concurrent_updates_reject_stale_revision():
     from ips.knowledge.schemas import ArticleInput
 
     engine = create_engine(Settings().database_url)
+    repository = KnowledgeRepository()
+    service = KnowledgeService(repository)
     tenant, actor, section_id = uuid4(), uuid4(), uuid4()
     with engine.begin() as connection:
         connection.execute(
@@ -292,24 +295,38 @@ def test_concurrent_updates_reject_stale_revision():
                 visibility="public",
                 status="published",
             )
-            article_id = KnowledgeRepository().create_article(db, tenant, actor, data)["id"]
-        barrier = Barrier(2, timeout=10)
+            article_id = repository.create_article(db, tenant, actor, data)["id"]
+        waiting_sessions: Queue[int] = Queue()
 
-        def edit(body):
+        def edit_stale_revision():
             with Session(engine) as db:
-                barrier.wait()
+                waiting_sessions.put(db.execute(text("SELECT pg_backend_pid()")).scalar_one())
                 try:
-                    result = KnowledgeService(KnowledgeRepository()).update(
-                        db, tenant, actor, article_id, 1, {"body": body}
-                    )
+                    result = service.update(db, tenant, actor, article_id, 1, {"body": "Second"})
                     db.commit()
                     return result["revision"]
                 except HTTPException as error:
                     db.rollback()
                     return error.status_code
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            assert sorted(pool.map(edit, ["First", "Second"])) == [2, 409]
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with Session(engine) as db, db.begin():
+                first = service.update(db, tenant, actor, article_id, 1, {"body": "First"})
+                second = pool.submit(edit_stale_revision)
+                pid = waiting_sessions.get(timeout=5)
+                with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as observer:
+                    deadline = monotonic() + 5
+                    while monotonic() < deadline:
+                        blocked = observer.execute(
+                            text("SELECT cardinality(pg_blocking_pids(:pid)) > 0"), {"pid": pid}
+                        ).scalar_one()
+                        if blocked:
+                            break
+                        sleep(0.01)
+                    else:
+                        pytest.fail("The second update never waited for the article lock")
+            assert first["revision"] == 2
+            assert second.result(timeout=5) == 409
     finally:
         with engine.begin() as connection:
             connection.execute(

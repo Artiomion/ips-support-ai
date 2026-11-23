@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from ips.core.db import get_session
 from ips.core.ports import CustomerPrincipal, TenantContext
+from ips.platform.audit import record
 from ips.platform.auth import require_csrf, require_role
 from ips.platform.identity import IdentityError, decode_identity, derive_widget_secret
 from ips.platform.schemas import ErrorResponse
@@ -146,6 +147,14 @@ def create_widget(
     ctx: Annotated[TenantContext, Depends(admin)],
     db: Annotated[Session, Depends(get_session)],
 ) -> Widget:
+    from ips.platform.settings import get_limits
+
+    limits = get_limits(db, ctx.tenant_id, lock=True)
+    count = db.execute(
+        text("SELECT count(*) FROM widgets WHERE tenant_id=:tenant"), {"tenant": ctx.tenant_id}
+    ).scalar_one()
+    if count >= limits.max_widgets:
+        raise HTTPException(429, "Widget limit reached")
     row = (
         db.execute(
             text("""INSERT INTO widgets (id, tenant_id, name, color, greeting, allowed_origins, public_key)
@@ -165,6 +174,7 @@ def create_widget(
         .one()
     )
     replace_widget_sections(db, ctx.tenant_id, row["id"], body.section_ids)
+    record(db, ctx.tenant_id, ctx.user_id, "widget.create", row["id"])
     result = widget_from_row(db, ctx.tenant_id, row)
     db.commit()
     return result
@@ -201,6 +211,7 @@ def update_widget(
     if row is None:
         raise HTTPException(404, "Widget unavailable")
     replace_widget_sections(db, ctx.tenant_id, row["id"], body.section_ids)
+    record(db, ctx.tenant_id, ctx.user_id, "widget.update", row["id"])
     result = widget_from_row(db, ctx.tenant_id, row)
     db.commit()
     return result

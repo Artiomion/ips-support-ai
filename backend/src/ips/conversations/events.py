@@ -13,6 +13,7 @@ class QueuedStaffReplyNotifications:
             event.tenant_id,
             "staff_reply",
             {
+                "tenant_id": str(event.tenant_id),
                 "conversation_id": str(event.conversation_id),
                 "message_id": str(event.message_id),
                 "created_at": event.created_at.isoformat(),

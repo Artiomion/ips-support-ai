@@ -30,9 +30,23 @@ class OutcomeConversationService(ConversationService):
         if row["mode"] != "bot":
             raise HTTPException(409, "Human support is active")
         answered = db.execute(
-            text("""SELECT EXISTS(SELECT 1 FROM messages
-            WHERE tenant_id=:tenant AND conversation_id=:id AND kind='assistant')"""),
-            {"tenant": principal.tenant_id, "id": conversation_id},
+            text("""SELECT EXISTS (
+              SELECT 1 FROM ai_runs r
+              JOIN messages question ON question.tenant_id=r.tenant_id
+                AND question.conversation_id=r.conversation_id AND question.id=r.input_message_id
+              JOIN messages answer ON answer.tenant_id=r.tenant_id
+                AND answer.conversation_id=r.conversation_id AND answer.client_message_id=r.id
+                AND answer.kind='assistant' AND answer.seq>question.seq
+              WHERE r.tenant_id=:tenant AND r.conversation_id=:id AND r.state='completed'
+                AND r.generation_version=:version
+                AND NOT EXISTS (SELECT 1 FROM messages later
+                    WHERE later.tenant_id=r.tenant_id AND later.conversation_id=r.conversation_id
+                      AND later.seq>answer.seq AND later.kind IN ('customer','assistant','specialist'))
+                AND NOT EXISTS (SELECT 1 FROM messages newer_question
+                    WHERE newer_question.tenant_id=r.tenant_id AND newer_question.conversation_id=r.conversation_id
+                      AND newer_question.kind='customer' AND newer_question.seq>question.seq)
+            )"""),
+            {"tenant": principal.tenant_id, "id": conversation_id, "version": row["version"]},
         ).scalar_one()
         if not answered:
             raise HTTPException(409, "No AI answer to confirm")

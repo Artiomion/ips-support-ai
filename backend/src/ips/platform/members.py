@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from ips.core.db import get_session
 from ips.core.jobs import enqueue
 from ips.core.ports import TenantContext
+from ips.platform.audit import record
 from ips.platform.auth import (
     check_origin,
     create_session,
@@ -224,6 +225,7 @@ def update_member(
             {**values, "tenant": ctx.tenant_id, "id": member_id},
         )
     result = member_row(db, ctx.tenant_id, member_id)
+    record(db, ctx.tenant_id, ctx.user_id, "member.update", member_id)
     db.commit()
     return result
 
@@ -269,6 +271,7 @@ def create_category(
             text("INSERT INTO categories (id,tenant_id,name) VALUES (:id,:tenant,:name)"),
             {"id": identifier, "tenant": ctx.tenant_id, "name": body.name},
         )
+        record(db, ctx.tenant_id, ctx.user_id, "category.create", identifier)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -313,6 +316,7 @@ def invite_member(
             "expires": datetime.now(UTC) + timedelta(days=7),
         },
     )
+    record(db, ctx.tenant_id, ctx.user_id, "member.invite", identifier)
     enqueue(
         db.connection(),
         ctx.tenant_id,
@@ -347,6 +351,15 @@ def accept_invitation(
     )
     if invite is None:
         raise HTTPException(401, "Invalid invitation")
+    from ips.platform.settings import get_limits
+
+    limits = get_limits(db, invite["tenant_id"], lock=True)
+    count = db.execute(
+        text("SELECT count(*) FROM memberships WHERE tenant_id=:tenant"),
+        {"tenant": invite["tenant_id"]},
+    ).scalar_one()
+    if count >= limits.max_staff:
+        raise HTTPException(429, "Staff limit reached")
     user = (
         db.execute(
             text("SELECT id,password_hash FROM users WHERE normalized_email=:email"),
@@ -390,6 +403,7 @@ def accept_invitation(
         db.execute(
             text("UPDATE invitations SET accepted_at=now() WHERE id=:id"), {"id": invite["id"]}
         )
+        record(db, invite["tenant_id"], user_id, "member.accept", member_id)
         token = create_session(db, user_id, invite["tenant_id"])
         db.commit()
     except IntegrityError as exc:
