@@ -45,18 +45,14 @@ def demo_ai_runner(engine, ports):
         def settle(self, reservation, usage, failed):
             pass
 
-    class DemoProvider(FakeLLMProvider):
-        def answer(self, data, timeout_seconds):
-            result = super().answer(data, timeout_seconds)
-            return result.model_copy(update={"text": f"Демо-режим: {result.text}"})
-
     sessions = sessionmaker(engine)
     worker = Orchestrator(
         sessions,
         getattr(ports, "usage_budget", None) or DemoBudget(),
         PostgresKnowledgeSearch(sessions),
-        DemoProvider(),
+        FakeLLMProvider(),
         tickets=ports.tickets,
         handoff_guard=lock_handoff_memberships,
+        demo=True,
     )
     return AIRunner(worker, engine)

@@ -7,10 +7,14 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from ips.ai.orchestrator import Orchestrator
+from ips.ai.provider import ProviderFailure
 from ips.conversations.repository import ConversationRepository
 from ips.conversations.service import ConversationService
 from ips.core.config import Settings
-from ips.core.ports import AnswerResult, CustomerPrincipal, Reservation
+from ips.core.ports import AnswerResult, Citation, CustomerPrincipal, KnowledgeSnippet, Reservation
+from ips.knowledge.repository import KnowledgeRepository
+from ips.knowledge.retrieval import PostgresKnowledgeSearch
+from ips.knowledge.schemas import ArticleInput
 from ips.tickets.service import TicketService
 
 
@@ -28,12 +32,6 @@ class Budget:
         self.settlements.append(failed)
 
 
-class Search:
-    def search(self, tenant_id, widget_id, query, audience, limit=5):
-        assert audience == "customer"
-        return []
-
-
 class Provider:
     def __init__(self, pause=False, malformed=False):
         self.started, self.resume = Event(), Event()
@@ -47,7 +45,11 @@ class Provider:
             return {"text": "bad", "needs_human": True, "priority": "urgent"}
         return AnswerResult(
             text="answer",
-            citations=[],
+            citations=[
+                Citation.model_validate(
+                    {field: data.snippets[0][field] for field in Citation.model_fields}
+                )
+            ],
             needs_human=False,
             category=None,
             priority="normal",
@@ -89,6 +91,51 @@ def scenario():
     engine.dispose()
 
 
+@pytest.fixture
+def public_source(scenario):
+    factory, principal, _, _ = scenario
+    section = uuid4()
+    params = {"tenant": principal.tenant_id, "widget": principal.widget_id, "section": section}
+    with factory.begin() as db:
+        db.execute(
+            text(
+                "INSERT INTO article_sections (id,tenant_id,name) VALUES (:section,:tenant,'Test')"
+            ),
+            params,
+        )
+        db.execute(
+            text("""INSERT INTO widget_sections (tenant_id,widget_id,section_id)
+            VALUES (:tenant,:widget,:section)"""),
+            params,
+        )
+        article = KnowledgeRepository().create_article(
+            db,
+            principal.tenant_id,
+            uuid4(),
+            ArticleInput(
+                section_id=section,
+                title="Public source",
+                body="hello follow-up. different conversation.",
+                visibility="public",
+                status="published",
+            ),
+        )
+    yield article
+    with factory.begin() as db:
+        db.execute(text("DELETE FROM widget_sections WHERE tenant_id=:tenant"), params)
+        db.execute(
+            text("UPDATE articles SET current_revision_id=NULL WHERE tenant_id=:tenant"), params
+        )
+        for table in ("article_revisions", "articles", "article_sections"):
+            db.execute(text(f"DELETE FROM {table} WHERE tenant_id=:tenant"), params)
+
+
+@pytest.fixture
+def search(scenario, public_source):
+    factory, _, _, _ = scenario
+    return PostgresKnowledgeSearch(factory)
+
+
 def assistants(factory, principal):
     with factory() as db:
         return db.execute(
@@ -97,10 +144,10 @@ def assistants(factory, principal):
         ).scalar_one()
 
 
-def test_handoff_while_provider_is_running_discards_reply(scenario):
+def test_handoff_while_provider_is_running_discards_reply(scenario, search):
     factory, principal, conversation, tickets = scenario
     provider, budget = Provider(pause=True), Budget()
-    worker = Orchestrator(factory, budget, Search(), provider, tenant_id=principal.tenant_id)
+    worker = Orchestrator(factory, budget, search, provider, tenant_id=principal.tenant_id)
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(worker.run_once)
         assert provider.started.wait(10)
@@ -112,9 +159,9 @@ def test_handoff_while_provider_is_running_discards_reply(scenario):
     assert budget.settlements == [False]
 
 
-def test_duplicate_job_does_not_duplicate_answer(scenario):
+def test_duplicate_job_does_not_duplicate_answer(scenario, search):
     factory, principal, _, _ = scenario
-    worker = Orchestrator(factory, Budget(), Search(), Provider(), tenant_id=principal.tenant_id)
+    worker = Orchestrator(factory, Budget(), search, Provider(), tenant_id=principal.tenant_id)
     assert worker.run_once()
     assert not worker.run_once()
     assert assistants(factory, principal) == 1
@@ -144,7 +191,7 @@ def queued_runs(scenario):
 
 
 @pytest.mark.parametrize("expired", [False, True], ids=["pending", "expired"])
-def test_answers_follow_message_sequence(scenario, queued_runs, expired):
+def test_answers_follow_message_sequence(scenario, queued_runs, expired, search):
     factory, principal, conversation, _ = scenario
     first_id, second_id = queued_runs
     if expired:
@@ -154,7 +201,7 @@ def test_answers_follow_message_sequence(scenario, queued_runs, expired):
                 WHERE id=:id"""),
                 {"id": first_id},
             )
-    worker = Orchestrator(factory, Budget(), Search(), Provider(), tenant_id=principal.tenant_id)
+    worker = Orchestrator(factory, Budget(), search, Provider(), tenant_id=principal.tenant_id)
 
     assert worker.run_once()
     assert worker.run_once()
@@ -173,14 +220,14 @@ def test_answers_follow_message_sequence(scenario, queued_runs, expired):
     assert answered == [first_id, second_id]
 
 
-def test_locked_earlier_run_only_blocks_its_conversation(scenario, queued_runs):
+def test_locked_earlier_run_only_blocks_its_conversation(scenario, queued_runs, search):
     factory, principal, _, _ = scenario
     first_id, _ = queued_runs
     service = ConversationService(ConversationRepository())
     with factory.begin() as db:
         other = service.repository.create(db, principal)["id"]
         service.send_customer(db, principal, other, uuid4(), "different conversation")
-    worker = Orchestrator(factory, Budget(), Search(), Provider(), tenant_id=principal.tenant_id)
+    worker = Orchestrator(factory, Budget(), search, Provider(), tenant_id=principal.tenant_id)
 
     with factory.begin() as db:
         db.execute(text("SELECT id FROM ai_runs WHERE id=:id FOR UPDATE"), {"id": first_id})
@@ -203,11 +250,11 @@ def test_locked_earlier_run_only_blocks_its_conversation(scenario, queued_runs):
     assert worker.run_once()
 
 
-def test_exhausted_budget_keeps_manual_handoff_available(scenario):
+def test_exhausted_budget_keeps_manual_handoff_available(scenario, search):
     factory, principal, conversation, tickets = scenario
     provider = Provider()
     assert Orchestrator(
-        factory, Budget(reject=True), Search(), provider, tenant_id=principal.tenant_id
+        factory, Budget(reject=True), search, provider, tenant_id=principal.tenant_id
     ).run_once()
     assert not provider.started.is_set()
     with factory.begin() as db:
@@ -215,10 +262,10 @@ def test_exhausted_budget_keeps_manual_handoff_available(scenario):
     assert assistants(factory, principal) == 0
 
 
-def test_malformed_provider_result_does_not_create_ticket(scenario):
+def test_malformed_provider_result_does_not_create_ticket(scenario, search):
     factory, principal, _, _ = scenario
     assert Orchestrator(
-        factory, Budget(), Search(), Provider(malformed=True), tenant_id=principal.tenant_id
+        factory, Budget(), search, Provider(malformed=True), tenant_id=principal.tenant_id
     ).run_once()
     with factory() as db:
         count = db.execute(
@@ -230,12 +277,12 @@ def test_malformed_provider_result_does_not_create_ticket(scenario):
 
 
 @pytest.mark.parametrize("malformed", [False, True], ids=["old_succeeds", "old_fails"])
-def test_expired_lease_is_recovered_and_only_current_attempt_settles(scenario, malformed):
+def test_expired_lease_is_recovered_and_only_current_attempt_settles(scenario, malformed, search):
     factory, principal, _, _ = scenario
     old, current = Provider(pause=True, malformed=malformed), Provider(pause=True)
     budget = Budget()
-    first = Orchestrator(factory, budget, Search(), old, tenant_id=principal.tenant_id)
-    second = Orchestrator(factory, budget, Search(), current, tenant_id=principal.tenant_id)
+    first = Orchestrator(factory, budget, search, old, tenant_id=principal.tenant_id)
+    second = Orchestrator(factory, budget, search, current, tenant_id=principal.tenant_id)
     with ThreadPoolExecutor(max_workers=2) as pool:
         try:
             first_attempt = pool.submit(first.run_once)
@@ -260,7 +307,7 @@ def test_expired_lease_is_recovered_and_only_current_attempt_settles(scenario, m
     assert budget.settlements == [False]
 
 
-def test_provider_failure_is_recorded_without_breaking_handoff(scenario):
+def test_provider_failure_is_recorded_without_breaking_handoff(scenario, search):
     factory, principal, conversation, tickets = scenario
 
     class FailedProvider:
@@ -269,7 +316,7 @@ def test_provider_failure_is_recorded_without_breaking_handoff(scenario):
 
     budget = Budget()
     assert Orchestrator(
-        factory, budget, Search(), FailedProvider(), tenant_id=principal.tenant_id
+        factory, budget, search, FailedProvider(), tenant_id=principal.tenant_id
     ).run_once()
     with factory.begin() as db:
         state, code = db.execute(
@@ -281,7 +328,43 @@ def test_provider_failure_is_recorded_without_breaking_handoff(scenario):
     assert budget.settlements == [True]
 
 
-def test_valid_handoff_uses_ticket_port(scenario):
+@pytest.mark.parametrize("code", ["provider_unavailable", "rate_limited"])
+def test_provider_outage_shows_safe_message_and_leaves_handoff_manual(scenario, search, code):
+    factory, principal, conversation, tickets = scenario
+
+    class UnavailableProvider:
+        def answer(self, data, timeout_seconds):
+            raise ProviderFailure(code)
+
+    budget = Budget()
+    worker = Orchestrator(
+        factory,
+        budget,
+        search,
+        UnavailableProvider(),
+        tickets=tickets,
+        tenant_id=principal.tenant_id,
+        demo=True,
+    )
+    assert worker.run_once()
+    with factory.begin() as db:
+        state, error = db.execute(
+            text("SELECT state,error_code FROM ai_runs WHERE tenant_id=:tenant"),
+            {"tenant": principal.tenant_id},
+        ).one()
+        answer = db.execute(
+            text("""SELECT text FROM messages WHERE tenant_id=:tenant AND kind='assistant'"""),
+            {"tenant": principal.tenant_id},
+        ).scalar_one()
+        assert answer == "Демо-режим: Не удалось подготовить ответ. Обратитесь к специалисту."
+        assert (state, error) == ("failed", code)
+        assert not tickets.has_active(db, principal.tenant_id, conversation)
+        tickets.escalate(db, principal, conversation, "help", None, "normal")
+        assert tickets.has_active(db, principal.tenant_id, conversation)
+    assert budget.settlements == [True]
+
+
+def test_valid_handoff_uses_ticket_port(scenario, search):
     factory, principal, conversation, tickets = scenario
 
     class HandoffProvider:
@@ -300,7 +383,7 @@ def test_valid_handoff_uses_ticket_port(scenario):
     worker = Orchestrator(
         factory,
         Budget(),
-        Search(),
+        search,
         HandoffProvider(),
         tickets=tickets,
         tenant_id=principal.tenant_id,
@@ -320,7 +403,7 @@ def test_valid_handoff_uses_ticket_port(scenario):
     assert assistants(factory, principal) == 1
 
 
-def test_ai_and_manual_handoff_no_lock_order_deadlock(scenario):
+def test_ai_and_manual_handoff_no_lock_order_deadlock(scenario, search):
     from threading import Event
 
     factory, principal, conversation, tickets = scenario
@@ -383,7 +466,7 @@ def test_ai_and_manual_handoff_no_lock_order_deadlock(scenario):
                 Orchestrator(
                     factory,
                     Budget(),
-                    Search(),
+                    search,
                     HandoffProvider(),
                     tickets=SignalingTicketPort(),
                     tenant_id=principal.tenant_id,
@@ -403,7 +486,7 @@ def test_ai_and_manual_handoff_no_lock_order_deadlock(scenario):
             db.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
 
 
-def test_handoff_without_guard_fails_closed(scenario):
+def test_handoff_without_guard_fails_closed(scenario, search):
     factory, principal, conversation, tickets = scenario
 
     class HandoffProvider:
@@ -420,7 +503,7 @@ def test_handoff_without_guard_fails_closed(scenario):
     worker = Orchestrator(
         factory,
         Budget(),
-        Search(),
+        search,
         HandoffProvider(),
         tickets=tickets,
         tenant_id=principal.tenant_id,
@@ -656,3 +739,117 @@ def test_runner_rejects_unintegrated_provider():
 
     with pytest.raises(ValueError, match="only the fake"):
         create_app(Settings(ai_runner_enabled=True, ai_provider="openai"))
+
+
+def test_guardrails_fall_back_to_handoff_without_public_sources(scenario):
+    from ips.tickets.locks import lock_handoff_memberships
+
+    factory, principal, conversation, tickets = scenario
+    provider = Provider()
+    worker = Orchestrator(
+        factory,
+        Budget(),
+        PostgresKnowledgeSearch(factory),
+        provider,
+        tickets=tickets,
+        tenant_id=principal.tenant_id,
+        handoff_guard=lock_handoff_memberships,
+    )
+    assert worker.run_once()
+    assert not provider.started.is_set()
+    with factory() as db:
+        mode = db.execute(
+            text("SELECT mode FROM conversations WHERE tenant_id=:tenant AND id=:conversation"),
+            {"tenant": principal.tenant_id, "conversation": conversation},
+        ).scalar_one()
+    assert mode == "human"
+    assert assistants(factory, principal) == 1
+
+
+def test_real_guardrails_recheck_sources_before_the_provider(scenario, public_source):
+    factory, principal, _, _ = scenario
+    with factory.begin() as db:
+        internal = KnowledgeRepository().create_article(
+            db,
+            principal.tenant_id,
+            uuid4(),
+            ArticleInput(
+                section_id=public_source["section_id"],
+                title="Private source",
+                body="Internal evidence",
+                visibility="internal",
+                status="published",
+            ),
+        )
+
+    class CandidateSearch:
+        def search(self, tenant_id, widget_id, query, audience, limit=5):
+            assert (tenant_id, widget_id, audience) == (
+                principal.tenant_id,
+                principal.widget_id,
+                "customer",
+            )
+            return [
+                KnowledgeSnippet(
+                    article_id=article["id"],
+                    revision=1,
+                    title="Candidate title",
+                    text="Candidate text",
+                    visibility="public",
+                )
+                for article in (public_source, internal)
+            ]
+
+    class CapturingProvider(Provider):
+        def answer(self, data, timeout_seconds):
+            self.data = data
+            return super().answer(data, timeout_seconds)
+
+    provider = CapturingProvider()
+    worker = Orchestrator(
+        factory, Budget(), CandidateSearch(), provider, tenant_id=principal.tenant_id
+    )
+    assert worker.run_once()
+    assert provider.started.is_set()
+    [snippet] = provider.data.snippets
+    assert snippet["article_id"] == str(public_source["id"])
+    assert snippet["title"] == "Public source"
+    assert "Candidate text" not in snippet["text"]
+    assert assistants(factory, principal) == 1
+
+
+@pytest.mark.parametrize("revoke", ["article", "widget_binding"])
+def test_answer_is_discarded_when_source_access_changes(scenario, search, public_source, revoke):
+    factory, principal, _, _ = scenario
+    provider = Provider(pause=True)
+    worker = Orchestrator(factory, Budget(), search, provider, tenant_id=principal.tenant_id)
+    tenant = {"tenant": principal.tenant_id}
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(worker.run_once)
+        try:
+            assert provider.started.wait(5)
+            with factory.begin() as db:
+                if revoke == "article":
+                    db.execute(
+                        text(
+                            "UPDATE articles SET visibility='internal' WHERE tenant_id=:tenant AND id=:id"
+                        ),
+                        {**tenant, "id": public_source["id"]},
+                    )
+                else:
+                    db.execute(
+                        text(
+                            "DELETE FROM widget_sections WHERE tenant_id=:tenant AND widget_id=:widget"
+                        ),
+                        {**tenant, "widget": principal.widget_id},
+                    )
+        finally:
+            provider.resume.set()
+        assert future.result(timeout=5)
+
+    assert assistants(factory, principal) == 0
+    with factory() as db:
+        run = db.execute(
+            text("SELECT state,error_code FROM ai_runs WHERE tenant_id=:tenant"), tenant
+        ).one()
+    assert run == ("discarded", "source_unavailable")

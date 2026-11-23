@@ -4,6 +4,16 @@ from sqlalchemy import text
 
 from ips.core.ports import KnowledgeSnippet
 
+_PUBLIC_SOURCE = """
+    FROM articles a JOIN article_revisions r ON r.tenant_id=a.tenant_id
+      AND r.article_id=a.id AND r.id=a.current_revision_id
+    JOIN widget_sections ws ON ws.tenant_id=a.tenant_id AND ws.section_id=a.section_id
+    JOIN widgets w ON w.tenant_id=ws.tenant_id AND w.id=ws.widget_id
+    WHERE a.tenant_id=:tenant AND ws.widget_id=:widget AND w.enabled=true
+      AND a.id=:article AND r.version=:revision AND a.visibility='public'
+      AND a.status='published'
+"""
+
 
 class ContextUnavailable(Exception):
     """The requested customer context is unavailable."""
@@ -84,16 +94,13 @@ class CustomerContext:
                     continue
                 row = (
                     db.execute(
-                        text("""SELECT a.id AS article_id,r.version AS revision,r.title,
+                        text(
+                            """SELECT a.id AS article_id,r.version AS revision,r.title,
                     left(ts_headline('simple',r.body,plainto_tsquery('simple',:query),
                          'StartSel="", StopSel="", MaxWords=35, MinWords=15'),2000) AS text
-                    FROM articles a JOIN article_revisions r ON r.tenant_id=a.tenant_id
-                      AND r.article_id=a.id AND r.id=a.current_revision_id
-                    JOIN widget_sections ws ON ws.tenant_id=a.tenant_id AND ws.section_id=a.section_id
-                    JOIN widgets w ON w.tenant_id=ws.tenant_id AND w.id=ws.widget_id
-                    WHERE a.tenant_id=:tenant AND ws.widget_id=:widget AND w.enabled=true
-                      AND a.id=:article AND r.version=:revision AND a.visibility='public'
-                      AND a.status='published' LIMIT 1"""),
+                    """
+                            + _PUBLIC_SOURCE
+                        ),
                         {
                             "query": question[:4000],
                             "tenant": principal.tenant_id,
@@ -110,3 +117,23 @@ class CustomerContext:
                     if snippet not in authorized:
                         authorized.append(snippet)
         return authorized
+
+    def lock_current_sources(self, db, tenant_id, widget_id, sources):
+        """Confirm source access under locks held until the answer is published."""
+        params = {"tenant": tenant_id, "widget": widget_id}
+        # Widget edits lock the widget before replacing its section bindings.
+        widget = db.execute(
+            text("""SELECT id FROM widgets
+            WHERE tenant_id=:tenant AND id=:widget AND enabled FOR SHARE"""),
+            params,
+        ).first()
+        if widget is None:
+            return False
+        query = text("SELECT a.id " + _PUBLIC_SOURCE + " FOR SHARE OF a, ws")
+        return all(
+            db.execute(
+                query, {**params, "article": source.article_id, "revision": source.revision}
+            ).first()
+            is not None
+            for source in sources
+        )
