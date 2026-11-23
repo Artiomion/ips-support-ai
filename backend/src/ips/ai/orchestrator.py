@@ -4,6 +4,7 @@ import json
 from uuid import uuid4
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from ips.ai.rules import validated_answer
 from ips.core.ports import AnswerInput, CustomerPrincipal, Usage
@@ -107,7 +108,7 @@ class Orchestrator:
             )
             return dict(row)
 
-    def _finish(self, run, state, error=None, result=None, context=None):
+    def _finish(self, run, state, error=None, result=None, context=None) -> bool:
         params = {
             "tenant": run["tenant_id"],
             "conversation": run["conversation_id"],
@@ -134,7 +135,7 @@ class Orchestrator:
                 params,
             ).first()
             if current is None:
-                return
+                return False
             if (
                 conversation["mode"] != "bot"
                 or conversation["version"] != run["generation_version"]
@@ -176,12 +177,14 @@ class Orchestrator:
                 WHERE id=:id AND tenant_id=:tenant AND attempts=:attempt"""),
                 {**params, "state": state, "error": error},
             )
+        return True
 
     def run_once(self):
         run = self._claim()
         if run is None:
             return False
         reservation = None
+        finished = False
         failed = True
         try:
             context = self._input(run)
@@ -198,11 +201,14 @@ class Orchestrator:
                 snippets=[s.model_dump(mode="json") for s in snippets],
             )
             answer = validated_answer(self.provider.answer(data, timeout_seconds=20), snippets)
-            self._finish(run, "completed", result=answer, context=context)
+            finished = self._finish(run, "completed", result=answer, context=context)
             failed = False
+        except OperationalError:
+            # A database interruption leaves the lease available for recovery.
+            raise
         except Exception:  # noqa: BLE001 - do not expose provider data or secrets.
-            self._finish(run, "failed", error="generation_failed")
+            finished = self._finish(run, "failed", error="generation_failed")
         finally:
-            if reservation is not None:
+            if finished and reservation is not None:
                 self.budget.settle(reservation, Usage(input_tokens=0, output_tokens=0), failed)
         return True

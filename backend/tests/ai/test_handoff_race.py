@@ -229,25 +229,35 @@ def test_malformed_provider_result_does_not_create_ticket(scenario):
     assert assistants(factory, principal) == 0
 
 
-def test_expired_lease_is_recovered_and_old_attempt_cannot_write(scenario):
+@pytest.mark.parametrize("malformed", [False, True], ids=["old_succeeds", "old_fails"])
+def test_expired_lease_is_recovered_and_only_current_attempt_settles(scenario, malformed):
     factory, principal, _, _ = scenario
-    old = Provider(pause=True)
-    first = Orchestrator(factory, Budget(), Search(), old, tenant_id=principal.tenant_id)
-    second = Orchestrator(factory, Budget(), Search(), Provider(), tenant_id=principal.tenant_id)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(first.run_once)
-        assert old.started.wait(10)
-        with factory.begin() as db:
-            db.execute(
-                text(
-                    "UPDATE ai_runs SET lease_until=now()-interval '1 second' WHERE tenant_id=:tenant"
-                ),
-                {"tenant": principal.tenant_id},
-            )
-        assert second.run_once()
-        old.resume.set()
-        assert future.result(timeout=10)
+    old, current = Provider(pause=True, malformed=malformed), Provider(pause=True)
+    budget = Budget()
+    first = Orchestrator(factory, budget, Search(), old, tenant_id=principal.tenant_id)
+    second = Orchestrator(factory, budget, Search(), current, tenant_id=principal.tenant_id)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        try:
+            first_attempt = pool.submit(first.run_once)
+            assert old.started.wait(5)
+            with factory.begin() as db:
+                db.execute(
+                    text(
+                        "UPDATE ai_runs SET lease_until=now()-interval '1 second' WHERE tenant_id=:tenant"
+                    ),
+                    {"tenant": principal.tenant_id},
+                )
+            second_attempt = pool.submit(second.run_once)
+            assert current.started.wait(5)
+            old.resume.set()
+            assert first_attempt.result(timeout=5)
+            current.resume.set()
+            assert second_attempt.result(timeout=5)
+        finally:
+            old.resume.set()
+            current.resume.set()
     assert assistants(factory, principal) == 1
+    assert budget.settlements == [False]
 
 
 def test_provider_failure_is_recorded_without_breaking_handoff(scenario):
@@ -460,8 +470,14 @@ def test_application_runner_processes_pending_handoff_and_stops(scenario):
                 text("SELECT count(*) FROM tickets WHERE tenant_id=:tenant"),
                 {"tenant": principal.tenant_id},
             ).scalar_one()
+            reply = db.execute(
+                text("""SELECT text FROM messages
+                WHERE tenant_id=:tenant AND conversation_id=:conversation AND kind='assistant'"""),
+                {"tenant": principal.tenant_id, "conversation": conversation},
+            ).scalar_one()
         assert mode == "human"
         assert count == 1
+        assert reply.startswith("Демо-режим: ")
         with factory() as db:
             has_real_budget = bool(
                 db.execute(text("SELECT to_regclass('usage_reservations')")).scalar_one()
@@ -548,6 +564,63 @@ def test_application_runner_and_manual_handoff_preserve_lock_order(scenario, mon
             )
             db.execute(text("DELETE FROM memberships WHERE id=:id"), {"id": membership_id})
             db.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
+
+
+def test_application_shutdown_stops_worker_waiting_for_database_lock(scenario, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from ips.main import create_app
+    from ips.tickets import locks
+
+    factory, principal, conversation, _ = scenario
+    user, membership = uuid4(), uuid4()
+    with factory.begin() as db:
+        db.execute(
+            text("INSERT INTO users (id,normalized_email,password_hash) VALUES (:id,:email,'x')"),
+            {"id": user, "email": f"{user}@example.org"},
+        )
+        db.execute(
+            text("""INSERT INTO memberships (id,tenant_id,user_id,role)
+            VALUES (:id,:tenant,:user,'specialist')"""),
+            {"id": membership, "tenant": principal.tenant_id, "user": user},
+        )
+    entered, shutdown = Event(), Event()
+    original_guard = locks.lock_handoff_memberships
+
+    def signaling_guard(db, tenant_id):
+        entered.set()
+        original_guard(db, tenant_id)
+
+    monkeypatch.setattr(locks, "lock_handoff_memberships", signaling_guard)
+    app = create_app(Settings(ai_runner_enabled=True))
+
+    def run_application():
+        with TestClient(app):
+            assert shutdown.wait(5)
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool, factory.begin() as db:
+            db.execute(
+                text("SELECT id FROM memberships WHERE id=:id FOR UPDATE"), {"id": membership}
+            )
+            application = pool.submit(run_application)
+            assert entered.wait(5)
+            shutdown.set()
+            application.result(timeout=5)
+            assert not app.state.ai_runner._thread.is_alive()
+            state = db.execute(
+                text("SELECT state FROM ai_runs WHERE conversation_id=:id"),
+                {"id": conversation},
+            ).scalar_one()
+            assert state == "running"
+    finally:
+        with factory.begin() as db:
+            db.execute(
+                text("UPDATE tickets SET assignee_id=NULL WHERE tenant_id=:tenant"),
+                {"tenant": principal.tenant_id},
+            )
+            db.execute(text("DELETE FROM memberships WHERE id=:id"), {"id": membership})
+            db.execute(text("DELETE FROM users WHERE id=:id"), {"id": user})
 
 
 def test_demo_runner_uses_configured_budget(scenario):
