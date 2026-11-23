@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from ips.ai.orchestrator import Orchestrator
+from ips.ai.provider import ProviderFailure
 from ips.conversations.repository import ConversationRepository
 from ips.conversations.service import ConversationService
 from ips.core.config import Settings
@@ -324,6 +325,42 @@ def test_provider_failure_is_recorded_without_breaking_handoff(scenario, search)
         ).one()
         tickets.escalate(db, principal, conversation, "help", None, "normal")
     assert (state, code) == ("failed", "generation_failed")
+    assert budget.settlements == [True]
+
+
+@pytest.mark.parametrize("code", ["provider_unavailable", "rate_limited"])
+def test_provider_outage_shows_safe_message_and_leaves_handoff_manual(scenario, search, code):
+    factory, principal, conversation, tickets = scenario
+
+    class UnavailableProvider:
+        def answer(self, data, timeout_seconds):
+            raise ProviderFailure(code)
+
+    budget = Budget()
+    worker = Orchestrator(
+        factory,
+        budget,
+        search,
+        UnavailableProvider(),
+        tickets=tickets,
+        tenant_id=principal.tenant_id,
+        demo=True,
+    )
+    assert worker.run_once()
+    with factory.begin() as db:
+        state, error = db.execute(
+            text("SELECT state,error_code FROM ai_runs WHERE tenant_id=:tenant"),
+            {"tenant": principal.tenant_id},
+        ).one()
+        answer = db.execute(
+            text("""SELECT text FROM messages WHERE tenant_id=:tenant AND kind='assistant'"""),
+            {"tenant": principal.tenant_id},
+        ).scalar_one()
+        assert answer == "Демо-режим: Не удалось подготовить ответ. Обратитесь к специалисту."
+        assert (state, error) == ("failed", code)
+        assert not tickets.has_active(db, principal.tenant_id, conversation)
+        tickets.escalate(db, principal, conversation, "help", None, "normal")
+        assert tickets.has_active(db, principal.tenant_id, conversation)
     assert budget.settlements == [True]
 
 
@@ -779,3 +816,40 @@ def test_real_guardrails_recheck_sources_before_the_provider(scenario, public_so
     assert snippet["title"] == "Public source"
     assert "Candidate text" not in snippet["text"]
     assert assistants(factory, principal) == 1
+
+
+@pytest.mark.parametrize("revoke", ["article", "widget_binding"])
+def test_answer_is_discarded_when_source_access_changes(scenario, search, public_source, revoke):
+    factory, principal, _, _ = scenario
+    provider = Provider(pause=True)
+    worker = Orchestrator(factory, Budget(), search, provider, tenant_id=principal.tenant_id)
+    tenant = {"tenant": principal.tenant_id}
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(worker.run_once)
+        try:
+            assert provider.started.wait(5)
+            with factory.begin() as db:
+                if revoke == "article":
+                    db.execute(
+                        text(
+                            "UPDATE articles SET visibility='internal' WHERE tenant_id=:tenant AND id=:id"
+                        ),
+                        {**tenant, "id": public_source["id"]},
+                    )
+                else:
+                    db.execute(
+                        text(
+                            "DELETE FROM widget_sections WHERE tenant_id=:tenant AND widget_id=:widget"
+                        ),
+                        {**tenant, "widget": principal.widget_id},
+                    )
+        finally:
+            provider.resume.set()
+        assert future.result(timeout=5)
+
+    assert assistants(factory, principal) == 0
+    with factory() as db:
+        run = db.execute(
+            text("SELECT state,error_code FROM ai_runs WHERE tenant_id=:tenant"), tenant
+        ).one()
+    assert run == ("discarded", "source_unavailable")

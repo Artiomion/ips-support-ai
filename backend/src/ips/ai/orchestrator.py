@@ -6,8 +6,9 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
-from ips.ai.guardrails import SafeCustomerAssistant
+from ips.ai.guardrails import SafeCustomerAssistant, fallback
 from ips.ai.history import CustomerContext
+from ips.ai.provider import ProviderFailure
 from ips.ai.rules import validated_answer
 from ips.core.ports import CustomerPrincipal, Usage
 
@@ -112,15 +113,20 @@ class Orchestrator:
             )
             return dict(row)
 
-    def _finish(self, run, state, error=None, result=None, context=None) -> bool:
+    def _finish(self, run, state, error=None, result=None, *, sources=()) -> bool:
         params = {
             "tenant": run["tenant_id"],
             "conversation": run["conversation_id"],
             "id": run["id"],
             "attempt": run["attempts"],
         }
+        tickets = (
+            self.tickets
+            if state == "completed" and result is not None and result.needs_human
+            else None
+        )
         with self.sessions.begin() as db:
-            if result is not None and result.needs_human and self.tickets is not None:
+            if tickets is not None:
                 if self.handoff_guard is None:
                     raise RuntimeError("handoff lock guard is not configured")
                 self.handoff_guard(db, run["tenant_id"])
@@ -145,14 +151,22 @@ class Orchestrator:
                 or conversation["version"] != run["generation_version"]
             ):
                 state, result, error = "discarded", None, None
+            if (
+                result is not None
+                and sources
+                and not self.customer_context.lock_current_sources(
+                    db, run["tenant_id"], conversation["widget_id"], sources
+                )
+            ):
+                state, result, error = "discarded", None, "source_unavailable"
             if result is not None:
-                if result.needs_human and self.tickets is not None:
+                if tickets is not None:
                     principal = CustomerPrincipal(
                         tenant_id=run["tenant_id"],
                         customer_id=conversation["customer_id"],
                         widget_id=conversation["widget_id"],
                     )
-                    self.tickets.escalate(
+                    tickets.escalate(
                         db,
                         principal,
                         run["conversation_id"],
@@ -170,7 +184,7 @@ class Orchestrator:
                         **params,
                         "message": uuid4(),
                         "key": run["id"],
-                        "body": result.text,
+                        "body": f"Демо-режим: {result.text}" if self.demo else result.text,
                         "sources": json.dumps(
                             [c.model_dump(mode="json") for c in result.citations]
                         ),
@@ -207,15 +221,21 @@ class Orchestrator:
             answer = validated_answer(
                 self.guardrails.answer_or_raise(question, history, snippets), snippets
             )
-            if self.demo:
-                answer = answer.model_copy(update={"text": f"Демо-режим: {answer.text}"})
-            finished = self._finish(run, "completed", result=answer, context=context)
+            finished = self._finish(run, "completed", result=answer, sources=snippets)
             failed = False
         except OperationalError:
             # A database interruption leaves the lease available for recovery.
             raise
-        except Exception:  # noqa: BLE001 - do not expose provider data or secrets.
-            finished = self._finish(run, "failed", error="generation_failed")
+        except Exception as exc:  # noqa: BLE001 - do not expose provider data or secrets.
+            code = "generation_failed"
+            notice = None
+            if isinstance(exc, ProviderFailure) and exc.code in (
+                "provider_unavailable",
+                "rate_limited",
+            ):
+                code = exc.code
+                notice = fallback(code)
+            finished = self._finish(run, "failed", error=code, result=notice)
         finally:
             if finished and reservation is not None:
                 self.budget.settle(reservation, Usage(input_tokens=0, output_tokens=0), failed)
