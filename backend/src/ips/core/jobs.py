@@ -30,11 +30,14 @@ def enqueue(
 
 
 def drain_once(engine: Engine, handlers: Mapping[str, Callable[[dict[str, Any]], None]]) -> bool:
+    if not handlers:
+        return False
     with engine.begin() as connection:
         row = connection.execute(
             text("""SELECT id, kind, payload FROM jobs
-                    WHERE status = 'pending' AND run_after <= now()
-                    ORDER BY run_after, id FOR UPDATE SKIP LOCKED LIMIT 1""")
+                    WHERE status = 'pending' AND run_after <= now() AND kind = ANY(:kinds)
+                    ORDER BY run_after, id FOR UPDATE SKIP LOCKED LIMIT 1"""),
+            {"kinds": list(handlers)},
         ).first()
         if row is None:
             return False

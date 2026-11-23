@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import Field, WithJsonSchema
 from sqlalchemy.orm import Session
 
+from ips.conversations.events import StaffReplyService
 from ips.conversations.repository import ConversationRepository
 from ips.conversations.schemas import (
     Conversation,
@@ -192,20 +193,18 @@ def send_staff_message(
     conversation_id: UUID,
     body: StaffMessageInput,
     response: Response,
+    request: Request,
     ctx: Annotated[TenantContext, Depends(tenant_context)],
     db: Annotated[Session, Depends(get_session)],
 ):
-    service = _service()
-    row = service.repository.find_staff(db, ctx.tenant_id, conversation_id, lock=True)
-    if row is None:
-        raise HTTPException(404, "Conversation unavailable")
-    existing = service.repository.find_message(
-        db, ctx.tenant_id, conversation_id, body.client_message_id
-    )
-    result = service.add_staff_message(
+    ports = request.app.state.ports
+    tickets, notifications = getattr(ports, "tickets", None), getattr(ports, "notifications", None)
+    if not body.internal and (tickets is None or notifications is None):
+        raise HTTPException(503, "Reply services unavailable")
+    result, created = StaffReplyService(_service(), tickets, notifications).send(
         db, ctx, conversation_id, body.text, body.internal, body.client_message_id
     )
-    if existing is not None:
+    if not created:
         response.status_code = 200
     db.commit()
     return StaffMessageResponse.model_validate(result.model_dump())
