@@ -6,13 +6,16 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import Field, WithJsonSchema, field_validator
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 
 from ips.core.db import get_session
+from ips.core.jobs import enqueue
 from ips.core.ports import DTO, TenantContext
 from ips.knowledge.imports import MAX_TXT_BYTES, ImportFailure, read_text
+from ips.knowledge.parsers import MAX_DOCUMENT_BYTES
 from ips.knowledge.repository import KnowledgeRepository
 from ips.knowledge.schemas import Article, ArticleInput, ArticleRevision, Section
 from ips.knowledge.service import KnowledgeService
@@ -281,7 +284,7 @@ async def parse_import(request: Request):
         size = 0
         async for chunk in request.stream():
             size += len(chunk)
-            if size > MAX_TXT_BYTES + 65536:
+            if size > MAX_DOCUMENT_BYTES + 65536:
                 raise MultiPartException("Import too large")
             yield chunk
 
@@ -309,7 +312,10 @@ async def parse_import(request: Request):
         if visibility not in ("public", "internal"):
             raise HTTPException(422, "Invalid visibility")
         filename = PurePosixPath((file.filename or "").replace("\\", "/")).name
-        return section_id, visibility, filename, await file.read(MAX_TXT_BYTES + 1)
+        content = await file.read(MAX_DOCUMENT_BYTES + 1)
+        if filename.lower().endswith(".txt") and len(content) > MAX_TXT_BYTES + 65536:
+            raise HTTPException(422, "Invalid multipart form")
+        return section_id, visibility, filename, content
     finally:
         await form.close()
 
@@ -333,23 +339,87 @@ def create_import(
         raise HTTPException(404, "Section unavailable")
     import_id = uuid4()
     try:
-        if "\x00" in filename or not filename.lower().endswith(".txt"):
+        if "\x00" in filename:
             raise ImportFailure("invalid_format")
-        content = read_text(raw)
-        title = filename[:-4][:200] or "Imported TXT"
-        article = ArticleInput(
-            section_id=section_id,
-            title=title,
-            body=content,
-            visibility=visibility,
-            status="draft",
+        extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if extension == "txt":
+            content = read_text(raw)
+            import_visibility = visibility
+        elif extension in ("pdf", "docx"):
+            if not raw or len(raw) > MAX_DOCUMENT_BYTES:
+                raise ImportFailure("too_large" if raw else "invalid_document")
+            row = repo.save_import(db, ctx.tenant_id, section_id, import_id, "queued", None)
+            db.execute(
+                sql_text("""INSERT INTO knowledge_import_files
+                (tenant_id,import_id,actor_id,filename,format,content)
+                VALUES (:tenant,:id,:actor,:filename,:format,:content)"""),
+                {
+                    "tenant": ctx.tenant_id,
+                    "id": import_id,
+                    "actor": ctx.user_id,
+                    "filename": filename,
+                    "format": extension,
+                    "content": raw,
+                },
+            )
+            enqueue(
+                db.connection(),
+                ctx.tenant_id,
+                "document_import",
+                {"tenant_id": str(ctx.tenant_id), "import_id": str(import_id)},
+                f"document_import:{import_id}",
+            )
+            result = ImportResult(**row)
+            db.commit()
+            return result
+        else:
+            raise ImportFailure("invalid_format")
+        organization = (
+            db.execute(
+                sql_text("SELECT settings FROM organizations WHERE id=:tenant FOR UPDATE"),
+                {"tenant": ctx.tenant_id},
+            )
+            .mappings()
+            .one()
         )
-        result = repo.create_article(
-            db, ctx.tenant_id, ctx.user_id, article, source_type="txt", source_id=import_id
-        )
-        row = repo.save_import(
-            db, ctx.tenant_id, section_id, import_id, "ready", None, result["id"]
-        )
+        max_bytes = organization["settings"].get("max_knowledge_bytes", 10 * 1024 * 1024)
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1:
+            raise ImportFailure("knowledge_limit_unavailable")
+        used = db.execute(
+            sql_text(
+                "SELECT COALESCE(sum(octet_length(body)),0) FROM article_revisions WHERE tenant_id=:tenant"
+            ),
+            {"tenant": ctx.tenant_id},
+        ).scalar_one()
+        if used + len(content.encode("utf-8")) > max_bytes:
+            raise ImportFailure("knowledge_quota_exceeded")
+        title = filename.rsplit(".", 1)[0][:180] or "Imported document"
+        parts = [content[index : index + 100000] for index in range(0, len(content), 100000)]
+        articles = []
+        for index, part in enumerate(parts):
+            article = ArticleInput(
+                section_id=section_id,
+                title=title if len(parts) == 1 else f"{title} ({index + 1}/{len(parts)})",
+                body=part,
+                visibility=import_visibility,
+                status="draft",
+            )
+            result = repo.create_article(
+                db, ctx.tenant_id, ctx.user_id, article, source_type=extension, source_id=import_id
+            )
+            articles.append(result["id"])
+        row = repo.save_import(db, ctx.tenant_id, section_id, import_id, "ready", None, articles[0])
+        for index, article_id in enumerate(articles):
+            db.execute(
+                sql_text("""INSERT INTO knowledge_import_articles (tenant_id,import_id,article_id,position)
+                VALUES (:tenant,:import,:article,:position)"""),
+                {
+                    "tenant": ctx.tenant_id,
+                    "import": import_id,
+                    "article": article_id,
+                    "position": index,
+                },
+            )
     except ImportFailure as exc:
         row = repo.save_import(db, ctx.tenant_id, section_id, import_id, "failed", exc.code)
     db.commit()

@@ -1,5 +1,6 @@
 """Opt-in OpenAI Responses adapter; callers explicitly provide credentials."""
 
+import base64
 import json
 import math
 import os
@@ -10,6 +11,7 @@ from pydantic import ValidationError
 
 from ips.ai.prompts import INSTRUCTIONS, prepare_customer_prompt
 from ips.ai.provider import AnswerInput, AnswerResult, Citation, ProviderFailure
+from ips.conversations.attachments import AttachmentFailure, validate_image
 
 _URL = "https://api.openai.com/v1/responses"
 _MAX_RESPONSE_BYTES = 1_048_576
@@ -37,12 +39,13 @@ def _transport(url, headers, payload, timeout):
 
 
 class OpenAIProvider:
-    def __init__(self, *, api_key: str, model: str, transport=None):
+    def __init__(self, *, api_key: str, model: str, transport=None, vision_supported=False):
         if not api_key or not model:
             raise ProviderFailure("not_configured")
         self._api_key = api_key
         self._model = model
         self._transport = transport or _transport
+        self.supports_vision = vision_supported
 
     @classmethod
     def from_env(cls):
@@ -51,6 +54,22 @@ class OpenAIProvider:
         return cls(api_key=os.environ.get("AI_API_KEY", ""), model=os.environ.get("AI_MODEL", ""))
 
     def answer(self, data: AnswerInput, timeout_seconds: float) -> AnswerResult:
+        if data.images and not self.supports_vision:
+            raise ProviderFailure("vision_not_supported")
+        if len(data.images) > 4:
+            raise ProviderFailure("invalid_image")
+        image_parts = []
+        for image in data.images:
+            try:
+                info = validate_image(image.data)
+                if info.mime != image.mime:
+                    raise AttachmentFailure("invalid_image")
+            except AttachmentFailure:
+                raise ProviderFailure("invalid_image") from None
+            encoded = base64.b64encode(image.data).decode("ascii")
+            image_parts.append(
+                {"type": "input_image", "image_url": f"data:{info.mime};base64,{encoded}"}
+            )
         prompt, sources = prepare_customer_prompt(data)
         if not sources:
             return AnswerResult(
@@ -67,7 +86,16 @@ class OpenAIProvider:
             "model": self._model,
             "store": False,
             "instructions": INSTRUCTIONS,
-            "input": prompt,
+            "input": (
+                [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": prompt}, *image_parts],
+                    }
+                ]
+                if image_parts
+                else prompt
+            ),
             "max_output_tokens": 700,
             "text": {
                 "format": {

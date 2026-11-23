@@ -3,6 +3,7 @@
 from uuid import UUID
 
 from fastapi import HTTPException
+from sqlalchemy import text as sql_text
 
 from ips.conversations.schemas import PublicMessage
 from ips.core.ports import ConversationState, CustomerPrincipal, StaffMessage
@@ -25,22 +26,67 @@ class ConversationService:
         conversation_id: UUID,
         client_message_id: UUID,
         text: str,
+        attachment_ids: list[UUID] | None = None,
     ):
         # The conversation lock serializes retries, sequence allocation and handoff.
         conversation = self._customer_conversation(uow, principal, conversation_id, lock=True)
+        attachment_ids = attachment_ids or []
+        if len(attachment_ids) > 4 or len(set(attachment_ids)) != len(attachment_ids):
+            raise HTTPException(422, "Invalid attachments")
         existing = self.repository.find_message(
             uow, principal.tenant_id, conversation_id, client_message_id
         )
         if existing is not None:
-            if existing["kind"] != "customer" or existing["text"] != text:
+            if (
+                existing["kind"] != "customer"
+                or existing["text"] != text
+                or [str(value) for value in existing["attachment_ids"]]
+                != [str(value) for value in attachment_ids]
+            ):
                 raise HTTPException(409, "Message id already used")
             return self._public_message(existing), False
+        if attachment_ids:
+            found = (
+                uow.execute(
+                    sql_text("""SELECT id FROM attachments WHERE tenant_id=:tenant
+                AND conversation_id=:conversation AND customer_id=:customer AND widget_id=:widget
+                AND state='ready' AND id=ANY(CAST(:ids AS uuid[]))"""),
+                    {
+                        "tenant": principal.tenant_id,
+                        "conversation": conversation_id,
+                        "customer": principal.customer_id,
+                        "widget": principal.widget_id,
+                        "ids": attachment_ids,
+                    },
+                )
+                .scalars()
+                .all()
+            )
+            if len(found) != len(attachment_ids):
+                raise HTTPException(404, "Attachment unavailable")
         row = self.repository.append_message(
             uow, principal.tenant_id, conversation_id, "customer", text, client_message_id
         )
+        for position, attachment_id in enumerate(attachment_ids):
+            uow.execute(
+                sql_text("""INSERT INTO message_attachments
+                (tenant_id,conversation_id,message_id,attachment_id,position)
+                VALUES (:tenant,:conversation,:message,:attachment,:position)"""),
+                {
+                    "tenant": principal.tenant_id,
+                    "conversation": conversation_id,
+                    "message": row["id"],
+                    "attachment": attachment_id,
+                    "position": position,
+                },
+            )
         if conversation["mode"] == "bot":
             self.repository.create_ai_run(
                 uow, principal.tenant_id, conversation_id, row["id"], conversation["version"]
+            )
+        if attachment_ids:
+            row = self.repository.find_message(
+                uow, principal.tenant_id, conversation_id, client_message_id
             )
         return self._public_message(row), True
 
