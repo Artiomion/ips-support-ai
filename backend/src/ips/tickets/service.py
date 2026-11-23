@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ips.core.ports import ConversationPort, CustomerPrincipal, TenantContext, TicketSummary
+from ips.tickets.routing import route_ticket
 
 
 class TicketService:
@@ -28,6 +29,11 @@ class TicketService:
             and principal.conversation_scope != conversation_id
         ):
             raise HTTPException(404, "Conversation unavailable")
+        # Capacity paths lock memberships before conversations and tickets.
+        uow.execute(
+            text("SELECT id FROM memberships WHERE tenant_id=:tenant ORDER BY id FOR UPDATE"),
+            {"tenant": principal.tenant_id},
+        ).all()
         state = self.conversations.lock_for_handoff(uow, principal.tenant_id, conversation_id)
         if (state.tenant_id, state.customer_id, state.widget_id) != (
             principal.tenant_id,
@@ -46,7 +52,8 @@ class TicketService:
             .mappings()
             .first()
         )
-        if row is None:
+        created = row is None
+        if created:
             category_id = None
             if category:
                 category_id = uow.execute(
@@ -69,6 +76,10 @@ class TicketService:
                 .one()
             )
         self.conversations.mark_human(uow, state)
+        if created:
+            assigned = route_ticket(uow, principal.tenant_id, row["id"], row["version"])
+            if assigned is not None:
+                return assigned
         return TicketSummary.model_validate({key: row[key] for key in TicketSummary.model_fields})
 
     def has_active(self, uow: Session, tenant_id: UUID, conversation_id: UUID) -> bool:
@@ -196,9 +207,43 @@ class TicketService:
         return self._ticket(uow, principal.tenant_id, ticket_id, lock=True), state
 
     def reopen(self, uow: Session, principal: CustomerPrincipal, ticket_id: UUID) -> TicketSummary:
+        initial = self._ticket(uow, principal.tenant_id, ticket_id)
+        if (
+            principal.conversation_scope is not None
+            and principal.conversation_scope != initial["conversation_id"]
+        ):
+            raise HTTPException(404, "Ticket unavailable")
+        assignee_id = initial["assignee_id"]
+        member = None
+        if assignee_id is not None:
+            # Capacity-changing paths always lock membership before the ticket.
+            member = (
+                uow.execute(
+                    text(
+                        "SELECT max_active FROM memberships WHERE tenant_id=:tenant AND id=:id FOR UPDATE"
+                    ),
+                    {"tenant": principal.tenant_id, "id": assignee_id},
+                )
+                .mappings()
+                .first()
+            )
         row, state = self._customer_ticket(uow, principal, ticket_id)
-        if row["status"] != "resolved" or self.has_active(uow, principal.tenant_id, state.id):
+        if (
+            row["status"] != "resolved"
+            or row["assignee_id"] != assignee_id
+            or self.has_active(uow, principal.tenant_id, state.id)
+        ):
             raise HTTPException(409, "Ticket cannot be reopened")
+        if assignee_id is not None:
+            if member is None:
+                raise HTTPException(409, "Assignee unavailable")
+            active = uow.execute(
+                text("""SELECT count(*) FROM tickets WHERE tenant_id=:tenant AND assignee_id=:id
+                    AND status NOT IN ('resolved','closed')"""),
+                {"tenant": principal.tenant_id, "id": assignee_id},
+            ).scalar_one()
+            if active >= member["max_active"]:
+                raise HTTPException(409, "Assignee at capacity")
         updated = (
             uow.execute(
                 text("""UPDATE tickets SET status='in_progress', version=version+1,
