@@ -198,6 +198,8 @@ def test_valid_handoff_uses_ticket_port(scenario):
                 reason="help",
             )
 
+    from ips.tickets.locks import lock_handoff_memberships
+
     worker = Orchestrator(
         factory,
         Budget(),
@@ -205,6 +207,7 @@ def test_valid_handoff_uses_ticket_port(scenario):
         HandoffProvider(),
         tickets=tickets,
         tenant_id=principal.tenant_id,
+        handoff_guard=lock_handoff_memberships,
     )
     assert worker.run_once()
     with factory() as db:
@@ -218,3 +221,124 @@ def test_valid_handoff_uses_ticket_port(scenario):
     assert mode == "human"
     assert count == 1
     assert assistants(factory, principal) == 1
+
+
+def test_ai_and_manual_handoff_no_lock_order_deadlock(scenario):
+    from threading import Event
+
+    factory, principal, conversation, tickets = scenario
+    user_id, membership_id = uuid4(), uuid4()
+    with factory.begin() as db:
+        db.execute(
+            text("INSERT INTO users (id,normalized_email,password_hash) VALUES (:id,:email,'x')"),
+            {"id": user_id, "email": f"{user_id}@example.org"},
+        )
+        db.execute(
+            text(
+                "INSERT INTO memberships (id,tenant_id,user_id,role) VALUES (:id,:tenant,:user,'specialist')"
+            ),
+            {"id": membership_id, "tenant": principal.tenant_id, "user": user_id},
+        )
+    from ips.tickets.locks import lock_handoff_memberships
+
+    membership_locked, guard_started = Event(), Event()
+
+    def handoff_guard(db, tenant_id):
+        guard_started.set()
+        lock_handoff_memberships(db, tenant_id)
+
+    errors = []
+
+    class SignalingTicketPort:
+        def escalate(self, *args):
+            try:
+                return tickets.escalate(*args)
+            except Exception as exc:
+                errors.append(exc)
+                raise
+
+    class HandoffProvider:
+        def answer(self, data, timeout_seconds):
+            return AnswerResult(
+                text="Contact support",
+                citations=[],
+                needs_human=True,
+                category=None,
+                priority="normal",
+                reason="help",
+            )
+
+    def manual_handoff():
+        with factory.begin() as db:
+            db.execute(
+                text("SELECT id FROM memberships WHERE tenant_id=:tenant AND id=:id FOR UPDATE"),
+                {"tenant": principal.tenant_id, "id": membership_id},
+            )
+            membership_locked.set()
+            assert guard_started.wait(5)
+            tickets.escalate(db, principal, conversation, "Manual", None, "normal")
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            manual = pool.submit(manual_handoff)
+            assert membership_locked.wait(5)
+            ai = pool.submit(
+                Orchestrator(
+                    factory,
+                    Budget(),
+                    Search(),
+                    HandoffProvider(),
+                    tickets=SignalingTicketPort(),
+                    tenant_id=principal.tenant_id,
+                    handoff_guard=handoff_guard,
+                ).run_once
+            )
+            manual.result(timeout=15)
+            ai.result(timeout=15)
+        assert not errors, [str(error) for error in errors]
+    finally:
+        with factory.begin() as db:
+            db.execute(
+                text("UPDATE tickets SET assignee_id=NULL WHERE tenant_id=:tenant"),
+                {"tenant": principal.tenant_id},
+            )
+            db.execute(text("DELETE FROM memberships WHERE id=:id"), {"id": membership_id})
+            db.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
+
+
+def test_handoff_without_guard_fails_closed(scenario):
+    factory, principal, conversation, tickets = scenario
+
+    class HandoffProvider:
+        def answer(self, data, timeout_seconds):
+            return AnswerResult(
+                text="Contact support",
+                citations=[],
+                needs_human=True,
+                category=None,
+                priority="normal",
+                reason="help",
+            )
+
+    worker = Orchestrator(
+        factory,
+        Budget(),
+        Search(),
+        HandoffProvider(),
+        tickets=tickets,
+        tenant_id=principal.tenant_id,
+    )
+    assert worker.run_once()
+    with factory() as db:
+        row = db.execute(
+            text("SELECT mode FROM conversations WHERE id=:id"), {"id": conversation}
+        ).one()
+        run = db.execute(
+            text("SELECT state, error_code FROM ai_runs WHERE conversation_id=:id"),
+            {"id": conversation},
+        ).one()
+        assert row.mode == "bot"
+        assert (run.state, run.error_code) == ("failed", "generation_failed")
+        assert not db.execute(
+            text("SELECT 1 FROM tickets WHERE tenant_id=:tenant"), {"tenant": principal.tenant_id}
+        ).first()
