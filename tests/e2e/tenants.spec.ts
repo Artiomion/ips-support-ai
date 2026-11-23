@@ -145,6 +145,12 @@ isolationTest("@browser staff sees its own queue, sends a reply, and keeps notes
   await ownTicket.click();
   await expect(page.getByText("Клиент: Beta request", { exact: true })).toBeVisible();
 
+  await page.getByRole("button", { name: "Взять заявку", exact: true }).click();
+  await expect(page.getByText(/Статус: В работе\./)).toBeVisible();
+  const claimed = await companies.beta.get(`/api/v1/tickets/${betaTicket.id}`);
+  expect(claimed.status()).toBe(200);
+  expect(await claimed.json()).toMatchObject({ status: "in_progress", assignee_id: expect.any(String) });
+
   await page.getByRole("combobox", { name: /Тип сообщения/ }).selectOption("internal");
   await page.getByLabel("Текст сообщения", { exact: true }).fill("Internal Beta note");
   await page.getByRole("button", { name: "Сохранить заметку", exact: true }).click();
