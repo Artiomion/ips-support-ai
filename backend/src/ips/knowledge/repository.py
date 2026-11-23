@@ -75,18 +75,23 @@ class KnowledgeRepository:
         )
         return self.get_article(db, tenant_id, article_id)
 
-    def get_article(self, db, tenant_id, article_id, *, lock=False):
+    def get_article(self, db, tenant_id, article_id):
         query = """SELECT a.id,a.tenant_id,a.section_id,a.visibility,a.status,
             r.version AS revision,r.title,r.body
             FROM articles a JOIN article_revisions r ON r.tenant_id=a.tenant_id
               AND r.article_id=a.id AND r.id=a.current_revision_id
             WHERE a.tenant_id=:tenant AND a.id=:id"""
-        if lock:
-            query += " FOR UPDATE OF a"
         return db.execute(text(query), {"tenant": tenant_id, "id": article_id}).mappings().first()
 
     def lock_article(self, db, tenant_id, article_id):
-        return self.get_article(db, tenant_id, article_id, lock=True)
+        article = db.execute(
+            text("SELECT id FROM articles WHERE tenant_id=:tenant AND id=:id FOR UPDATE"),
+            {"tenant": tenant_id, "id": article_id},
+        ).scalar_one_or_none()
+        if article is None:
+            return None
+        # A fresh statement sees the revision committed while we waited for the lock.
+        return self.get_article(db, tenant_id, article_id)
 
     def save_revision(self, db, article, changes, actor_id, source_type):
         # The row lock acquired by the service serializes revision creation.
