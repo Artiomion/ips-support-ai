@@ -32,16 +32,25 @@ class Orchestrator:
 
     def _claim(self):
         with self.sessions.begin() as db:
+            # A locked earlier run must still block later runs in its conversation.
             row = (
                 db.execute(
                     text("""
                 SELECT r.* FROM ai_runs r
+                JOIN messages input ON input.tenant_id=r.tenant_id
+                  AND input.conversation_id=r.conversation_id AND input.id=r.input_message_id
                 WHERE (CAST(:tenant AS uuid) IS NULL OR r.tenant_id=:tenant)
                   AND (r.state='pending' OR (r.state='running' AND r.lease_until < now()))
                   AND NOT EXISTS (SELECT 1 FROM ai_runs other
+                    JOIN messages previous ON previous.tenant_id=other.tenant_id
+                      AND previous.conversation_id=other.conversation_id
+                      AND previous.id=other.input_message_id
                     WHERE other.tenant_id=r.tenant_id AND other.conversation_id=r.conversation_id
-                      AND other.id<>r.id AND other.state='running' AND other.lease_until>=now())
-                ORDER BY r.id FOR UPDATE SKIP LOCKED LIMIT 1
+                      AND other.id<>r.id
+                      AND ((other.state='running' AND other.lease_until>=now())
+                        OR (previous.seq<input.seq AND (other.state='pending'
+                          OR (other.state='running' AND other.lease_until<now())))))
+                ORDER BY input.created_at, r.id FOR UPDATE OF r SKIP LOCKED LIMIT 1
             """),
                     {"tenant": self.tenant_id},
                 )

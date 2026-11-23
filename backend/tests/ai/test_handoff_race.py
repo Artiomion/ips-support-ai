@@ -120,6 +120,89 @@ def test_duplicate_job_does_not_duplicate_answer(scenario):
     assert assistants(factory, principal) == 1
 
 
+@pytest.fixture
+def queued_runs(scenario):
+    factory, principal, conversation, _ = scenario
+    second_id, first_id = sorted((uuid4(), uuid4()))
+    service = ConversationService(ConversationRepository())
+    with factory.begin() as db:
+        service.send_customer(db, principal, conversation, uuid4(), "follow-up")
+        db.execute(
+            text("""UPDATE ai_runs AS r
+            SET id=CASE WHEN m.seq=1 THEN CAST(:first AS uuid) ELSE CAST(:second AS uuid) END
+            FROM messages AS m WHERE r.tenant_id=:tenant AND r.conversation_id=:conversation
+              AND m.tenant_id=r.tenant_id AND m.conversation_id=r.conversation_id
+              AND m.id=r.input_message_id"""),
+            {
+                "tenant": principal.tenant_id,
+                "conversation": conversation,
+                "first": first_id,
+                "second": second_id,
+            },
+        )
+    return first_id, second_id
+
+
+@pytest.mark.parametrize("expired", [False, True], ids=["pending", "expired"])
+def test_answers_follow_message_sequence(scenario, queued_runs, expired):
+    factory, principal, conversation, _ = scenario
+    first_id, second_id = queued_runs
+    if expired:
+        with factory.begin() as db:
+            db.execute(
+                text("""UPDATE ai_runs SET state='running', lease_until=now()-interval '1 second'
+                WHERE id=:id"""),
+                {"id": first_id},
+            )
+    worker = Orchestrator(factory, Budget(), Search(), Provider(), tenant_id=principal.tenant_id)
+
+    assert worker.run_once()
+    assert worker.run_once()
+
+    with factory() as db:
+        answered = (
+            db.execute(
+                text("""SELECT client_message_id FROM messages
+            WHERE tenant_id=:tenant AND conversation_id=:conversation AND kind='assistant'
+            ORDER BY seq"""),
+                {"tenant": principal.tenant_id, "conversation": conversation},
+            )
+            .scalars()
+            .all()
+        )
+    assert answered == [first_id, second_id]
+
+
+def test_locked_earlier_run_only_blocks_its_conversation(scenario, queued_runs):
+    factory, principal, _, _ = scenario
+    first_id, _ = queued_runs
+    service = ConversationService(ConversationRepository())
+    with factory.begin() as db:
+        other = service.repository.create(db, principal)["id"]
+        service.send_customer(db, principal, other, uuid4(), "different conversation")
+    worker = Orchestrator(factory, Budget(), Search(), Provider(), tenant_id=principal.tenant_id)
+
+    with factory.begin() as db:
+        db.execute(text("SELECT id FROM ai_runs WHERE id=:id FOR UPDATE"), {"id": first_id})
+        assert worker.run_once()
+        assert not worker.run_once()
+
+    with factory() as db:
+        replied_to = (
+            db.execute(
+                text(
+                    "SELECT conversation_id FROM messages WHERE tenant_id=:tenant AND kind='assistant'"
+                ),
+                {"tenant": principal.tenant_id},
+            )
+            .scalars()
+            .all()
+        )
+    assert replied_to == [other]
+    assert worker.run_once()
+    assert worker.run_once()
+
+
 def test_exhausted_budget_keeps_manual_handoff_available(scenario):
     factory, principal, conversation, tickets = scenario
     provider = Provider()
