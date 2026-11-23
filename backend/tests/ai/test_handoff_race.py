@@ -79,6 +79,10 @@ def scenario():
         service.send_customer(db, principal, conversation, uuid4(), "hello")
     yield factory, principal, conversation, tickets
     with factory.begin() as db:
+        if db.execute(text("SELECT to_regclass('usage_reservations')")).scalar_one():
+            db.execute(
+                text("DELETE FROM usage_reservations WHERE tenant_id=:tenant"), {"tenant": tenant}
+            )
         for table in ("tickets", "ai_runs", "messages", "conversations", "customers", "widgets"):
             db.execute(text(f"DELETE FROM {table} WHERE tenant_id=:tenant"), {"tenant": tenant})
         db.execute(text("DELETE FROM organizations WHERE id=:tenant"), {"tenant": tenant})
@@ -375,6 +379,23 @@ def test_application_runner_processes_pending_handoff_and_stops(scenario):
             ).scalar_one()
         assert mode == "human"
         assert count == 1
+        with factory() as db:
+            has_real_budget = bool(
+                db.execute(text("SELECT to_regclass('usage_reservations')")).scalar_one()
+            )
+        if has_real_budget:
+            deadline = monotonic() + 8
+            reservation = None
+            while monotonic() < deadline:
+                with factory() as db:
+                    reservation = db.execute(
+                        text("SELECT state FROM usage_reservations WHERE tenant_id=:tenant"),
+                        {"tenant": principal.tenant_id},
+                    ).scalar_one_or_none()
+                if reservation == "succeeded":
+                    break
+                sleep(0.05)
+            assert reservation == "succeeded"
     assert not app.state.ai_runner._thread.is_alive()
 
 
