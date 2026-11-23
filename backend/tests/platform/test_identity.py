@@ -529,3 +529,72 @@ def test_signed_customer_identity_is_stable_only_within_its_tenant():
         headers_b = create_admin("Tenant B")
         third = create_widget_and_identify(headers_b)
         assert first != third
+
+
+def test_widget_sections_round_trip_and_reject_foreign_without_partial_update():
+    from uuid import uuid4
+
+    from fastapi.testclient import TestClient
+
+    from ips.core.config import Settings
+    from ips.main import create_app
+
+    app = create_app(Settings())
+    origin = {"Origin": "http://localhost:5173"}
+    with TestClient(app) as first, TestClient(app) as other:
+
+        def register(client):
+            response = client.post(
+                "/api/v1/auth/register",
+                headers=origin,
+                json={
+                    "organization_name": "Widget sections",
+                    "email": f"{uuid4()}@example.org",
+                    "password": "correct-horse-battery",
+                },
+            )
+            assert response.status_code == 201
+            return {**origin, "X-CSRF-Token": response.json()["csrf_token"]}
+
+        headers = register(first)
+        foreign_headers = register(other)
+        section = first.post("/api/v1/knowledge/sections", headers=headers, json={"name": "Own"})
+        foreign = other.post(
+            "/api/v1/knowledge/sections", headers=foreign_headers, json={"name": "Foreign"}
+        )
+        assert section.status_code == foreign.status_code == 201
+        own_id, foreign_id = section.json()["id"], foreign.json()["id"]
+        payload = {
+            "name": "Widget",
+            "color": "#123456",
+            "greeting": "Hello",
+            "allowed_origins": ["https://site.example"],
+            "section_ids": [own_id],
+        }
+        rejected_create = first.post(
+            "/api/v1/widgets", headers=headers, json={**payload, "section_ids": [foreign_id]}
+        )
+        assert rejected_create.status_code == 404
+        duplicate = first.post(
+            "/api/v1/widgets", headers=headers, json={**payload, "section_ids": [own_id, own_id]}
+        )
+        assert duplicate.status_code == 422
+        widget = first.post("/api/v1/widgets", headers=headers, json=payload)
+        assert widget.status_code == 201, widget.text
+        widget_id = widget.json()["id"]
+        assert widget.json()["section_ids"] == [own_id]
+        listed = first.get("/api/v1/widgets").json()["items"]
+        assert next(item for item in listed if item["id"] == widget_id)["section_ids"] == [own_id]
+        denied = first.put(
+            f"/api/v1/widgets/{widget_id}",
+            headers=headers,
+            json={**payload, "name": "Changed", "section_ids": [foreign_id]},
+        )
+        assert denied.status_code == 404
+        listed = first.get("/api/v1/widgets").json()["items"]
+        unchanged = next(item for item in listed if item["id"] == widget_id)
+        assert unchanged["name"] == "Widget" and unchanged["section_ids"] == [own_id]
+        cleared = first.put(
+            f"/api/v1/widgets/{widget_id}", headers=headers, json={**payload, "section_ids": []}
+        )
+        assert cleared.status_code == 200 and cleared.json()["section_ids"] == []
