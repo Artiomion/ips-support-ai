@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from ips.conversations.outcomes import router as outcomes_router
 from ips.conversations.router import public_router as conversations_public_router
 from ips.conversations.router import staff_router as conversations_staff_router
 from ips.core.composition import default_ports
@@ -39,6 +40,7 @@ def create_app(settings: Settings | None = None, ports: object = None) -> FastAP
     app.include_router(tickets_staff_router)
     app.include_router(conversations_public_router)
     app.include_router(conversations_staff_router)
+    app.include_router(outcomes_router)
     app.include_router(knowledge_router)
     app.middleware("http")(widget_cors)
     engine = create_engine(
