@@ -15,6 +15,7 @@ WIDGET_SESSION = re.compile(r"^/api/v1/public/widgets/([^/]+)/sessions$")
 TICKET_PATH = re.compile(
     r"^/api/v1/public/(?:conversations/[^/]+/handoff|tickets/[^/]+(?:/confirm|/reopen)?)$"
 )
+CONVERSATION_PATH = re.compile(r"^/api/v1/public/conversations(?:/[^/]+/messages)?$")
 
 
 def _is_allowed(request: Request, origin: str, widget_key: str | None) -> bool:
@@ -48,7 +49,8 @@ async def widget_cors(request: Request, call_next):
     match = WIDGET_SESSION.fullmatch(path)
     is_session = path == "/api/v1/public/session"
     is_ticket = bool(TICKET_PATH.fullmatch(path))
-    if not match and not is_session and not is_ticket:
+    is_conversation = bool(CONVERSATION_PATH.fullmatch(path))
+    if not match and not is_session and not is_ticket and not is_conversation:
         return await call_next(request)
     origin = request.headers.get("origin")
     if not origin:
@@ -56,7 +58,7 @@ async def widget_cors(request: Request, call_next):
     key = unquote(match.group(1)) if match else None
     allowed = (
         origin == request.app.state.settings.widget_origin
-        if is_ticket
+        if is_ticket or is_conversation
         else await run_in_threadpool(_is_allowed, request, origin, key)
     )
     preflight = request.method == "OPTIONS" and "access-control-request-method" in request.headers
@@ -75,7 +77,7 @@ async def widget_cors(request: Request, call_next):
         }
         if (
             not allowed
-            or method != expected_method
+            or (method not in {"GET", "POST"} if is_conversation else method != expected_method)
             or not headers <= {"content-type", "authorization"}
             or "access-control-request-private-network" in request.headers
         ):
