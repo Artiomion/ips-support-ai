@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, field_validator
+from pydantic_core import PydanticCustomError
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -74,6 +75,13 @@ class OrganizationSettingsUpdate(BaseModel):
             raise ValueError("Invalid value")
         if isinstance(value, int) and not isinstance(value, bool) and value < 1:
             raise ValueError("Invalid value")
+        return value
+
+    @field_validator("retention_days", "auto_close_hours", mode="before")
+    @classmethod
+    def reject_boolean_duration(cls, value):
+        if isinstance(value, bool):
+            raise PydanticCustomError("int_type", "Input should be a valid integer")
         return value
 
 

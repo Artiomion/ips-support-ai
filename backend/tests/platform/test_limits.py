@@ -41,11 +41,18 @@ def test_settings_capabilities_and_audit_through_actual_app():
         changed = client.patch(
             "/api/v1/organization",
             headers=headers,
-            json={"name": "New", "language": "ru", "retention_days": 1, "auto_close_hours": 1},
+            json={
+                "name": "New",
+                "language": "ru",
+                "retention_days": 1,
+                "auto_close_hours": 1,
+                "allow_general_knowledge": True,
+            },
         )
         assert changed.status_code == 200, changed.text
         assert changed.json()["name"] == "New" and changed.json()["language"] == "ru"
         assert changed.json()["retention_days"] == changed.json()["auto_close_hours"] == 1
+        assert changed.json()["allow_general_knowledge"] is True
         updated_member = client.patch(
             f"/api/v1/members/{register.json()['membership_id']}",
             headers=headers,
@@ -70,6 +77,10 @@ def test_settings_capabilities_and_audit_through_actual_app():
         ("auto_close_hours", "-1"),
         ("retention_days", 0.0),
         ("auto_close_hours", 1.5),
+        ("retention_days", True),
+        ("retention_days", False),
+        ("auto_close_hours", True),
+        ("auto_close_hours", False),
     ],
 )
 def test_invalid_settings_update_preserves_saved_settings(field, value):
