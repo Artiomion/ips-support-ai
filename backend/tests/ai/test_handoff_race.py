@@ -342,3 +342,140 @@ def test_handoff_without_guard_fails_closed(scenario):
         assert not db.execute(
             text("SELECT 1 FROM tickets WHERE tenant_id=:tenant"), {"tenant": principal.tenant_id}
         ).first()
+
+
+def test_application_runner_processes_pending_handoff_and_stops(scenario):
+    from time import monotonic, sleep
+
+    from fastapi.testclient import TestClient
+
+    from ips.main import create_app
+
+    factory, principal, conversation, _ = scenario
+    app = create_app(Settings(ai_runner_enabled=True))
+    with TestClient(app):
+        deadline = monotonic() + 8
+        while monotonic() < deadline:
+            with factory() as db:
+                state = db.execute(
+                    text("SELECT state FROM ai_runs WHERE conversation_id=:id"),
+                    {"id": conversation},
+                ).scalar_one()
+            if state in ("completed", "failed"):
+                break
+            sleep(0.05)
+        assert state == "completed"
+        with factory() as db:
+            mode = db.execute(
+                text("SELECT mode FROM conversations WHERE id=:id"), {"id": conversation}
+            ).scalar_one()
+            count = db.execute(
+                text("SELECT count(*) FROM tickets WHERE tenant_id=:tenant"),
+                {"tenant": principal.tenant_id},
+            ).scalar_one()
+        assert mode == "human"
+        assert count == 1
+    assert not app.state.ai_runner._thread.is_alive()
+
+
+def test_application_runner_and_manual_handoff_preserve_lock_order(scenario, monkeypatch):
+    from time import monotonic, sleep
+
+    from fastapi.testclient import TestClient
+
+    from ips.main import create_app
+    from ips.tickets import locks
+
+    factory, principal, conversation, tickets = scenario
+    user_id, membership_id = uuid4(), uuid4()
+    with factory.begin() as db:
+        db.execute(
+            text("INSERT INTO users (id,normalized_email,password_hash) VALUES (:id,:email,'x')"),
+            {"id": user_id, "email": f"{user_id}@example.org"},
+        )
+        db.execute(
+            text(
+                "INSERT INTO memberships (id,tenant_id,user_id,role) "
+                "VALUES (:id,:tenant,:user,'specialist')"
+            ),
+            {"id": membership_id, "tenant": principal.tenant_id, "user": user_id},
+        )
+    entered = Event()
+    original_guard = locks.lock_handoff_memberships
+
+    def guarded(db, tenant_id):
+        entered.set()
+        original_guard(db, tenant_id)
+
+    monkeypatch.setattr(locks, "lock_handoff_memberships", guarded)
+    app = create_app(Settings(ai_runner_enabled=True))
+    try:
+        with factory.begin() as db:
+            db.execute(
+                text("SELECT id FROM memberships WHERE id=:id FOR UPDATE"), {"id": membership_id}
+            )
+            with TestClient(app):
+                assert entered.wait(8)
+                tickets.escalate(db, principal, conversation, "Manual", None, "normal")
+                db.commit()
+                deadline = monotonic() + 8
+                while monotonic() < deadline:
+                    with factory() as inspect_db:
+                        state = inspect_db.execute(
+                            text("SELECT state FROM ai_runs WHERE conversation_id=:id"),
+                            {"id": conversation},
+                        ).scalar_one()
+                    if state in ("discarded", "failed", "completed"):
+                        break
+                    sleep(0.05)
+                assert state == "discarded"
+                assert assistants(factory, principal) == 0
+                with factory() as inspect_db:
+                    count = inspect_db.execute(
+                        text("SELECT count(*) FROM tickets WHERE tenant_id=:tenant"),
+                        {"tenant": principal.tenant_id},
+                    ).scalar_one()
+                    assert count == 1
+    finally:
+        with factory.begin() as db:
+            db.execute(
+                text("UPDATE tickets SET assignee_id=NULL WHERE tenant_id=:tenant"),
+                {"tenant": principal.tenant_id},
+            )
+            db.execute(text("DELETE FROM memberships WHERE id=:id"), {"id": membership_id})
+            db.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
+
+
+def test_demo_runner_uses_configured_budget(scenario):
+    from time import monotonic, sleep
+
+    from fastapi.testclient import TestClient
+
+    from ips.core.composition import default_ports
+    from ips.main import create_app
+
+    factory, _, conversation, _ = scenario
+    ports = default_ports()
+    budget = Budget()
+    ports.usage_budget = budget
+    app = create_app(Settings(ai_runner_enabled=True), ports=ports)
+    with TestClient(app):
+        deadline = monotonic() + 8
+        while monotonic() < deadline and not budget.settlements:
+            sleep(0.05)
+        assert budget.settlements == [False]
+        with factory() as db:
+            assert (
+                db.execute(
+                    text("SELECT state FROM ai_runs WHERE conversation_id=:id"),
+                    {"id": conversation},
+                ).scalar_one()
+                == "completed"
+            )
+
+
+def test_runner_rejects_unintegrated_provider():
+    from ips.main import create_app
+
+    with pytest.raises(ValueError, match="only the fake"):
+        create_app(Settings(ai_runner_enabled=True, ai_provider="openai"))
