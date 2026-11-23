@@ -15,7 +15,10 @@ WIDGET_SESSION = re.compile(r"^/api/v1/public/widgets/([^/]+)/sessions$")
 TICKET_PATH = re.compile(
     r"^/api/v1/public/(?:conversations/[^/]+/handoff|tickets/[^/]+(?:/confirm|/reopen)?)$"
 )
-CONVERSATION_PATH = re.compile(r"^/api/v1/public/conversations(?:/[^/]+/messages)?$")
+CONVERSATION_PATH = re.compile(
+    r"^/api/v1/public/conversations(?:/[^/]+/(?:messages|confirm-ai|resume-bot))?$"
+)
+OUTCOME_PATH = re.compile(r"^/api/v1/public/conversations/[^/]+/(?:confirm-ai|resume-bot)$")
 
 
 def _is_allowed(request: Request, origin: str, widget_key: str | None) -> bool:
@@ -50,6 +53,7 @@ async def widget_cors(request: Request, call_next):
     is_session = path == "/api/v1/public/session"
     is_ticket = bool(TICKET_PATH.fullmatch(path))
     is_conversation = bool(CONVERSATION_PATH.fullmatch(path))
+    is_outcome = bool(OUTCOME_PATH.fullmatch(path))
     if not match and not is_session and not is_ticket and not is_conversation:
         return await call_next(request)
     origin = request.headers.get("origin")
@@ -67,7 +71,9 @@ async def widget_cors(request: Request, call_next):
         method = request.headers["access-control-request-method"].upper()
         expected_method = (
             "POST"
-            if match or (is_ticket and path.endswith(("/handoff", "/confirm", "/reopen")))
+            if match
+            or is_outcome
+            or (is_ticket and path.endswith(("/handoff", "/confirm", "/reopen")))
             else "GET"
         )
         headers = {
@@ -77,7 +83,11 @@ async def widget_cors(request: Request, call_next):
         }
         if (
             not allowed
-            or (method not in {"GET", "POST"} if is_conversation else method != expected_method)
+            or (
+                method not in {"GET", "POST"}
+                if is_conversation and not is_outcome
+                else method != expected_method
+            )
             or not headers <= {"content-type", "authorization"}
             or "access-control-request-private-network" in request.headers
         ):

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from ips.core.db import get_session
 from ips.core.ports import CustomerPrincipal, TenantContext
+from ips.platform.audit import record
 from ips.platform.auth import require_csrf, require_role
 from ips.platform.identity import IdentityError, decode_identity, derive_widget_secret
 from ips.platform.schemas import ErrorResponse
@@ -48,9 +49,9 @@ class WidgetInput(Strict):
 
     @field_validator("section_ids")
     @classmethod
-    def sections_not_yet_available(cls, value: list[UUID]) -> list[UUID]:
-        if value:
-            raise ValueError("Knowledge section bindings are not available yet")
+    def unique_sections(cls, value: list[UUID]) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("Duplicate knowledge section")
         return value
 
 
@@ -93,8 +94,45 @@ class PublicSession(CurrentPublicSession):
     access_token: str
 
 
-def widget_from_row(row: Any) -> Widget:
-    return Widget(**dict(row), section_ids=[])
+def widget_from_row(db: Session, tenant_id: UUID, row: Any) -> Widget:
+    section_ids = (
+        db.execute(
+            text(
+                "SELECT section_id FROM widget_sections WHERE tenant_id=:tenant AND widget_id=:widget ORDER BY section_id"
+            ),
+            {"tenant": tenant_id, "widget": row["id"]},
+        )
+        .scalars()
+        .all()
+    )
+    return Widget(**dict(row), section_ids=section_ids)
+
+
+def replace_widget_sections(db: Session, tenant_id: UUID, widget_id: UUID, section_ids: list[UUID]):
+    if section_ids:
+        found = (
+            db.execute(
+                text(
+                    "SELECT id FROM article_sections WHERE tenant_id=:tenant AND id=ANY(:ids) FOR KEY SHARE"
+                ),
+                {"tenant": tenant_id, "ids": section_ids},
+            )
+            .scalars()
+            .all()
+        )
+        if len(found) != len(section_ids):
+            raise HTTPException(404, "Section unavailable")
+    db.execute(
+        text("DELETE FROM widget_sections WHERE tenant_id=:tenant AND widget_id=:widget"),
+        {"tenant": tenant_id, "widget": widget_id},
+    )
+    for section_id in section_ids:
+        db.execute(
+            text(
+                "INSERT INTO widget_sections (tenant_id,widget_id,section_id) VALUES (:tenant,:widget,:section)"
+            ),
+            {"tenant": tenant_id, "widget": widget_id, "section": section_id},
+        )
 
 
 @staff_router.post(
@@ -109,6 +147,14 @@ def create_widget(
     ctx: Annotated[TenantContext, Depends(admin)],
     db: Annotated[Session, Depends(get_session)],
 ) -> Widget:
+    from ips.platform.settings import get_limits
+
+    limits = get_limits(db, ctx.tenant_id, lock=True)
+    count = db.execute(
+        text("SELECT count(*) FROM widgets WHERE tenant_id=:tenant"), {"tenant": ctx.tenant_id}
+    ).scalar_one()
+    if count >= limits.max_widgets:
+        raise HTTPException(429, "Widget limit reached")
     row = (
         db.execute(
             text("""INSERT INTO widgets (id, tenant_id, name, color, greeting, allowed_origins, public_key)
@@ -127,8 +173,11 @@ def create_widget(
         .mappings()
         .one()
     )
+    replace_widget_sections(db, ctx.tenant_id, row["id"], body.section_ids)
+    record(db, ctx.tenant_id, ctx.user_id, "widget.create", row["id"])
+    result = widget_from_row(db, ctx.tenant_id, row)
     db.commit()
-    return widget_from_row(row)
+    return result
 
 
 @staff_router.put(
@@ -161,8 +210,11 @@ def update_widget(
     )
     if row is None:
         raise HTTPException(404, "Widget unavailable")
+    replace_widget_sections(db, ctx.tenant_id, row["id"], body.section_ids)
+    record(db, ctx.tenant_id, ctx.user_id, "widget.update", row["id"])
+    result = widget_from_row(db, ctx.tenant_id, row)
     db.commit()
-    return widget_from_row(row)
+    return result
 
 
 @staff_router.post(
@@ -211,7 +263,7 @@ def list_widgets(
         .all()
     )
     return WidgetPage(
-        items=[widget_from_row(row) for row in rows[:limit]],
+        items=[widget_from_row(db, ctx.tenant_id, row) for row in rows[:limit]],
         next_cursor=str(rows[limit - 1]["id"]) if len(rows) > limit else None,
     )
 

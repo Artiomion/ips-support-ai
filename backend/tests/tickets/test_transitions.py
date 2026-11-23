@@ -529,7 +529,7 @@ def test_ticket_details_are_atomic_and_category_is_tenant_scoped(context):
                     url,
                     json={"expected_version": 3, "assignee_id": str(uuid4()), "priority": "low"},
                 ).status_code
-                == 503
+                == 409
             )
             assert client.get(url).json()["priority"] == "urgent"
     finally:

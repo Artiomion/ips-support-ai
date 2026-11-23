@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     smtp_from: str = "support@example.invalid"
     cookie_secure: bool = False
     session_secret: str = "development-only-change-me-before-production"
+    ai_runner_enabled: bool = False
+    ai_provider: str = "fake"
 
     @model_validator(mode="after")
     def validate_production(self):

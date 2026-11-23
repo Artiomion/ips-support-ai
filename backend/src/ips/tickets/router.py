@@ -10,10 +10,12 @@ from sqlalchemy.orm import Session
 
 from ips.core.db import get_session
 from ips.core.ports import CustomerPrincipal, TenantContext, TicketSummary
+from ips.platform.audit import record
 from ips.platform.auth import require_csrf, tenant_context
 from ips.platform.members import cursor_value
 from ips.platform.schemas import ErrorResponse
 from ips.platform.widget_api import customer_principal
+from ips.tickets.assignment import claim_ticket, reassign_ticket
 from ips.tickets.service import TicketService
 
 errors: dict[int | str, dict[str, Any]] = {
@@ -60,6 +62,29 @@ class TicketUpdate(BaseModel):
         return value
 
 
+class VersionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+
+
+@staff_router.post(
+    "/tickets/{ticket_id}/claim",
+    operation_id="claimTicket",
+    response_model=TicketResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def claim(
+    ticket_id: UUID,
+    body: VersionInput,
+    ctx: Annotated[TenantContext, Depends(tenant_context)],
+    db: Annotated[Session, Depends(get_session)],
+) -> TicketSummary:
+    result = claim_ticket(db, ctx, ticket_id, body.expected_version)
+    record(db, ctx.tenant_id, ctx.user_id, "ticket.claim", ticket_id)
+    db.commit()
+    return result
+
+
 @staff_router.put(
     "/tickets/{ticket_id}",
     operation_id="updateTicket",
@@ -73,9 +98,14 @@ def update_ticket(
     db: Annotated[Session, Depends(get_session)],
 ) -> TicketSummary:
     if "assignee_id" in body.model_fields_set:
-        raise HTTPException(503, "This ticket update is not available yet")
-    changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
-    result = TicketService.update_details(db, ctx, ticket_id, body.expected_version, changes)
+        changes = body.model_dump(exclude_unset=True, exclude={"expected_version", "assignee_id"})
+        result = reassign_ticket(
+            db, ctx, ticket_id, body.expected_version, body.assignee_id, changes
+        )
+    else:
+        changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
+        result = TicketService.update_details(db, ctx, ticket_id, body.expected_version, changes)
+    record(db, ctx.tenant_id, ctx.user_id, "ticket.update", ticket_id)
     db.commit()
     return result
 
