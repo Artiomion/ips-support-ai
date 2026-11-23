@@ -5,8 +5,10 @@ from uuid import uuid4
 
 from sqlalchemy import text
 
+from ips.ai.guardrails import SafeCustomerAssistant
+from ips.ai.history import CustomerContext
 from ips.ai.rules import validated_answer
-from ips.core.ports import AnswerInput, CustomerPrincipal, Usage
+from ips.core.ports import CustomerPrincipal, Usage
 
 
 class Orchestrator:
@@ -17,6 +19,8 @@ class Orchestrator:
         self.budget = budget
         self.search = search
         self.provider = provider
+        self.customer_context = CustomerContext(sessions, search)
+        self.guardrails = SafeCustomerAssistant(self.customer_context, provider)
         self.tickets = tickets
         self.lease_seconds = max(30, lease_seconds)
         self.tenant_id = tenant_id
@@ -167,15 +171,17 @@ class Orchestrator:
                 self._finish(run, "discarded")
                 return True
             reservation = self.budget.reserve(run["tenant_id"], run["id"])
-            snippets = self.search.search(
-                run["tenant_id"], context["widget_id"], context["text"], "customer"
+            principal = CustomerPrincipal(
+                tenant_id=run["tenant_id"],
+                customer_id=context["customer_id"],
+                widget_id=context["widget_id"],
             )
-            data = AnswerInput(
-                text=context["text"],
-                history=[],
-                snippets=[s.model_dump(mode="json") for s in snippets],
+            question, history, snippets = self.customer_context.prepare(
+                principal, run["conversation_id"], run["input_message_id"]
             )
-            answer = validated_answer(self.provider.answer(data, timeout_seconds=20), snippets)
+            answer = validated_answer(
+                self.guardrails.answer_or_raise(question, history, snippets), snippets
+            )
             self._finish(run, "completed", result=answer, context=context)
             failed = False
         except Exception:  # noqa: BLE001 - do not expose provider data or secrets.
