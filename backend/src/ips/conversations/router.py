@@ -145,10 +145,8 @@ def send_customer_message(
     principal: Annotated[CustomerPrincipal, Depends(customer_principal)],
     db: Annotated[Session, Depends(get_session)],
 ):
-    if body.attachment_ids:
-        raise HTTPException(422, "Attachments are not available")
     result, created = _service().send_customer(
-        db, principal, conversation_id, body.client_message_id, body.text
+        db, principal, conversation_id, body.client_message_id, body.text, body.attachment_ids
     )
     if created:
         tickets = getattr(request.app.state.ports, "tickets", None)

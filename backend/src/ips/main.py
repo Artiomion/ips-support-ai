@@ -1,14 +1,19 @@
+import asyncio
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from ips.conversations.attachments import router as attachments_router
 from ips.conversations.router import public_router as conversations_public_router
 from ips.conversations.router import staff_router as conversations_staff_router
 from ips.core.composition import default_ports
 from ips.core.config import Settings
 from ips.core.errors import install_error_handlers
+from ips.knowledge.parsers import DocumentImportRunner
 from ips.knowledge.router import router as knowledge_router
 from ips.platform.members import router as members_router
 from ips.platform.router import router as auth_router
@@ -20,7 +25,16 @@ from ips.tickets.router import staff_router as tickets_staff_router
 
 def create_app(settings: Settings | None = None, ports: object = None) -> FastAPI:
     settings = settings or Settings()
-    app = FastAPI(title="IPS Support API")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.document_runner.start()
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(app.state.document_runner.stop)
+
+    app = FastAPI(title="IPS Support API", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.web_origin],
@@ -39,12 +53,14 @@ def create_app(settings: Settings | None = None, ports: object = None) -> FastAP
     app.include_router(tickets_staff_router)
     app.include_router(conversations_public_router)
     app.include_router(conversations_staff_router)
+    app.include_router(attachments_router)
     app.include_router(knowledge_router)
     app.middleware("http")(widget_cors)
     engine = create_engine(
         settings.database_url, pool_pre_ping=True, connect_args={"connect_timeout": 2}
     )
     app.state.engine = engine
+    app.state.document_runner = DocumentImportRunner(engine)
 
     @app.get("/health/live")
     def live() -> dict[str, str]:

@@ -75,8 +75,10 @@ class ConversationRepository:
     def find_message(self, uow, tenant_id, conversation_id, client_message_id):
         return (
             uow.execute(
-                text("""SELECT *, '[]'::jsonb AS attachment_ids FROM messages
-            WHERE tenant_id=:tenant AND conversation_id=:conversation AND client_message_id=:key"""),
+                text("""SELECT m.*, COALESCE((SELECT jsonb_agg(ma.attachment_id ORDER BY ma.position)
+              FROM message_attachments ma WHERE ma.tenant_id=m.tenant_id AND ma.conversation_id=m.conversation_id
+                AND ma.message_id=m.id), '[]'::jsonb) AS attachment_ids FROM messages m
+            WHERE m.tenant_id=:tenant AND m.conversation_id=:conversation AND m.client_message_id=:key"""),
                 {
                     "tenant": tenant_id,
                     "conversation": conversation_id,
@@ -137,10 +139,12 @@ class ConversationRepository:
         return (
             uow.execute(
                 text(
-                    """SELECT *, '[]'::jsonb AS attachment_ids FROM messages
-            WHERE tenant_id=:tenant AND conversation_id=:conversation AND seq>:after """
+                    """SELECT m.*, COALESCE((SELECT jsonb_agg(ma.attachment_id ORDER BY ma.position)
+              FROM message_attachments ma WHERE ma.tenant_id=m.tenant_id AND ma.conversation_id=m.conversation_id
+                AND ma.message_id=m.id), '[]'::jsonb) AS attachment_ids FROM messages m
+            WHERE m.tenant_id=:tenant AND m.conversation_id=:conversation AND m.seq>:after """
                     + visibility
-                    + " ORDER BY seq ASC LIMIT :limit"
+                    + " ORDER BY m.seq ASC LIMIT :limit"
                 ),
                 {
                     "tenant": tenant_id,

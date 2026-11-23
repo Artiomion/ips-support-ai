@@ -2,11 +2,15 @@
 
 from pydantic import ValidationError
 
-from ips.ai.provider import AnswerInput, AnswerResult, Citation
+from ips.ai.provider import AnswerInput, AnswerResult, Citation, ProviderFailure
 
 
 class FakeLLMProvider:
+    supports_vision = False
+
     def answer(self, data: AnswerInput, timeout_seconds: float) -> AnswerResult:
+        if data.images:
+            raise ProviderFailure("vision_not_supported")
         query = data.text.strip().casefold()
         for snippet in data.snippets:
             content = snippet.get("text")
