@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ips.core.db import get_session
 from ips.core.ports import CustomerPrincipal, TenantContext, TicketSummary
+from ips.platform.audit import record
 from ips.platform.auth import require_csrf, tenant_context
 from ips.platform.members import cursor_value
 from ips.platform.schemas import ErrorResponse
@@ -79,6 +80,7 @@ def claim(
     db: Annotated[Session, Depends(get_session)],
 ) -> TicketSummary:
     result = claim_ticket(db, ctx, ticket_id, body.expected_version)
+    record(db, ctx.tenant_id, ctx.user_id, "ticket.claim", ticket_id)
     db.commit()
     return result
 
@@ -103,6 +105,7 @@ def update_ticket(
     else:
         changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
         result = TicketService.update_details(db, ctx, ticket_id, body.expected_version, changes)
+    record(db, ctx.tenant_id, ctx.user_id, "ticket.update", ticket_id)
     db.commit()
     return result
 
