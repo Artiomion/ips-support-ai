@@ -120,17 +120,34 @@ def list_tickets(
     q: Annotated[str | None, WithJsonSchema({"type": "string"})] = None,
     widget_id: Annotated[UUID | None, WithJsonSchema({"type": "string", "format": "uuid"})] = None,
 ) -> TicketPage:
-    if q or widget_id:
-        raise HTTPException(503, "Conversation search is not available yet")
-    clauses = ["tenant_id=:tenant", "id>:after"]
+    clauses = ["t.tenant_id=:tenant", "t.id>:after"]
     params = {"tenant": ctx.tenant_id, "after": cursor_value(cursor), "limit": limit + 1}
     if status:
-        clauses.append("status=:status")
+        clauses.append("t.status=:status")
         params["status"] = status
+    if widget_id is not None:
+        clauses.append("""EXISTS (
+            SELECT 1 FROM conversations c
+            WHERE c.tenant_id=t.tenant_id AND c.id=t.conversation_id AND c.widget_id=:widget
+        )""")
+        params["widget"] = widget_id
+    query = q.strip() if q is not None else ""
+    if "\x00" in query:
+        raise HTTPException(422, "Invalid search query")
+    if query:
+        clauses.append("""EXISTS (
+            SELECT 1 FROM messages m
+            WHERE m.tenant_id=t.tenant_id AND m.conversation_id=t.conversation_id
+              AND m.kind IN ('customer', 'assistant', 'specialist')
+              AND strpos(lower(m.text), lower(:query)) > 0
+        )""")
+        params["query"] = query
     rows = (
         db.execute(
             text(
-                "SELECT * FROM tickets WHERE " + " AND ".join(clauses) + " ORDER BY id LIMIT :limit"
+                "SELECT t.* FROM tickets t WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY t.id LIMIT :limit"
             ),
             params,
         )
