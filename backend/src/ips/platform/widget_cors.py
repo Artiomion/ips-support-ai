@@ -13,8 +13,9 @@ from ips.platform.widgets import normalize_origin
 
 WIDGET_SESSION = re.compile(r"^/api/v1/public/widgets/([^/]+)/sessions$")
 TICKET_PATH = re.compile(
-    r"^/api/v1/public/(?:conversations/[^/]+/handoff|tickets/[^/]+(?:/confirm|/reopen)?)$"
+    r"^/api/v1/public/(?:conversations/[^/]+/handoff|tickets/[^/]+(?:/confirm|/reopen|/rating)?)$"
 )
+EMAIL_PATH = re.compile(r"^/api/v1/public/customer/(?:email/(?:request|confirm)|links/exchange)$")
 CONVERSATION_PATH = re.compile(
     r"^/api/v1/public/conversations(?:/[^/]+/(?:messages|confirm-ai|resume-bot))?$"
 )
@@ -52,9 +53,10 @@ async def widget_cors(request: Request, call_next):
     match = WIDGET_SESSION.fullmatch(path)
     is_session = path == "/api/v1/public/session"
     is_ticket = bool(TICKET_PATH.fullmatch(path))
+    is_email = bool(EMAIL_PATH.fullmatch(path))
     is_conversation = bool(CONVERSATION_PATH.fullmatch(path))
     is_outcome = bool(OUTCOME_PATH.fullmatch(path))
-    if not match and not is_session and not is_ticket and not is_conversation:
+    if not match and not is_session and not is_ticket and not is_email and not is_conversation:
         return await call_next(request)
     origin = request.headers.get("origin")
     if not origin:
@@ -62,7 +64,7 @@ async def widget_cors(request: Request, call_next):
     key = unquote(match.group(1)) if match else None
     allowed = (
         origin == request.app.state.settings.widget_origin
-        if is_ticket or is_conversation
+        if is_ticket or is_email or is_conversation
         else await run_in_threadpool(_is_allowed, request, origin, key)
     )
     preflight = request.method == "OPTIONS" and "access-control-request-method" in request.headers
@@ -73,7 +75,8 @@ async def widget_cors(request: Request, call_next):
             "POST"
             if match
             or is_outcome
-            or (is_ticket and path.endswith(("/handoff", "/confirm", "/reopen")))
+            or is_email
+            or (is_ticket and path.endswith(("/handoff", "/confirm", "/reopen", "/rating")))
             else "GET"
         )
         headers = {
