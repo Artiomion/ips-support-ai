@@ -1,7 +1,7 @@
 """Use real API processes and independent PostgreSQL databases for the M4 smoke."""
 
 import os
-import socket
+import re
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -23,6 +23,7 @@ M3_REVISION = "b0008_request_limits"
 WEB_ORIGIN = "http://localhost:5173"
 WIDGET_ORIGIN = "http://localhost:5174"
 PASSWORD = "local-test-password"
+UVICORN_ORIGIN = re.compile(rb"Uvicorn running on (http://127\.0\.0\.1:\d+)")
 
 
 @pytest.fixture
@@ -72,21 +73,41 @@ def migrate(database, revision="head"):
 
 @contextmanager
 def api_process(database, log):
-    with socket.socket() as listener, log.open("wb") as output:
-        listener.bind(("127.0.0.1", 0))
-        listener.listen()
-        origin = f"http://127.0.0.1:{listener.getsockname()[1]}"
+    with log.open("wb") as output:
         process = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "ips.main:app", "--fd", str(listener.fileno())],
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "ips.main:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "0",
+                "--log-level",
+                "info",
+                "--no-use-colors",
+            ],
             cwd=BACKEND,
             env=process_env(database),
-            pass_fds=(listener.fileno(),),
             stdout=output,
             stderr=subprocess.STDOUT,
         )
     try:
+        deadline = monotonic() + 15
+        # Let Uvicorn bind an ephemeral port itself on both Windows and Unix.
+        while process.poll() is None and monotonic() < deadline:
+            match = UVICORN_ORIGIN.search(log.read_bytes())
+            if match is not None:
+                origin = match[1].decode("ascii")
+                break
+            sleep(0.05)
+        else:
+            pytest.fail(
+                f"API did not bind a port:\n{log.read_text(encoding='utf-8', errors='replace')}"
+            )
+
         with httpx.Client(base_url=origin, timeout=5, trust_env=False) as client:
-            deadline = monotonic() + 15
             while process.poll() is None and monotonic() < deadline:
                 try:
                     if client.get("/health/ready", timeout=0.5).status_code == 200:
@@ -95,7 +116,9 @@ def api_process(database, log):
                     pass
                 sleep(0.05)
             else:
-                pytest.fail(f"API did not start:\n{log.read_text()}")
+                pytest.fail(
+                    f"API did not start:\n{log.read_text(encoding='utf-8', errors='replace')}"
+                )
             yield client
     finally:
         if process.poll() is None:

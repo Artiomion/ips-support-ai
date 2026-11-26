@@ -93,6 +93,17 @@ docker compose -p ips-demo -f infra/compose.yaml exec -T postgres \
 в `IPS_POSTGRES_CONTAINER` и запустить из каталога `backend`
 `uv run --frozen pytest -q tests/integration`.
 
+На Windows с Docker Desktop эти же тесты можно запустить из PowerShell.
+Начните из корня проекта с Python 3.12 и uv.
+
+```powershell
+docker compose -p ips-b08-test -f infra/compose.yaml up -d --wait postgres
+$env:DATABASE_URL = "postgresql+psycopg://ips:ips@127.0.0.1:5432/ips"
+$env:IPS_POSTGRES_CONTAINER = "ips-b08-test-postgres-1"
+Set-Location backend
+uv run --frozen pytest -q tests/integration
+```
+
 ## Остановка и сброс
 
 `docker compose -p ips-demo -f infra/compose.yaml stop` сохраняет базу.
