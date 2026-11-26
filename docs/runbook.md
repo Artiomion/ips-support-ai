@@ -48,9 +48,8 @@ docker compose -p ips-demo -f infra/compose.yaml run --rm --no-deps \
 docker compose -p ips-demo -f infra/compose.yaml exec api python -m ips.platform.notifications
 ```
 
-После слияния B07 эта же команда обрабатывает подтверждения адреса и
-уведомления о публичном ответе специалиста. Собранная страница перехода
-из письма появится после A07.
+Команда обрабатывает приглашения, подтверждения адреса и уведомления
+о публичном ответе специалиста. Страница перехода из письма входит в A07.
 
 Для внешнего SMTP передайте серверу `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`,
 `SMTP_TLS` (`starttls` или `implicit`), `SMTP_USERNAME`, `SMTP_PASSWORD`
@@ -86,8 +85,9 @@ docker compose -p ips-demo -f infra/compose.yaml exec -T postgres \
 Ожидаются две строки. Поведенческий тест входит в
 [`backend/tests/integration/test_core.py`](../backend/tests/integration/test_core.py).
 Он создаёт отдельные базы, применяет миграции с пустой схемы и с ревизии
-M3, проверяет откат handoff и доступ к заявке после перезапуска API,
-восстанавливает архив и проверяет изоляцию данных через API.
+`b0008_request_limits` перед B07, проверяет откат handoff и доступ к заявке
+после перезапуска API, восстанавливает архив и проверяет изоляцию данных
+через API.
 При локальном запуске тестов нужны `pg_dump` и `pg_restore` совместимой
 с сервером версии. Для PostgreSQL в Docker можно передать имя контейнера
 в `IPS_POSTGRES_CONTAINER` и запустить из каталога `backend`
