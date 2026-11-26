@@ -28,6 +28,7 @@ from ips.tickets.analytics import router as analytics_router
 from ips.tickets.ratings import router as ratings_router
 from ips.tickets.router import router as tickets_router
 from ips.tickets.router import staff_router as tickets_staff_router
+from ips.tickets.sla import router as sla_router
 
 
 def create_app(settings: Settings | None = None, ports: object = None) -> FastAPI:
@@ -47,6 +48,7 @@ def create_app(settings: Settings | None = None, ports: object = None) -> FastAP
     app.include_router(tickets_staff_router)
     app.include_router(ratings_router)
     app.include_router(analytics_router)
+    app.include_router(sla_router)
     app.include_router(conversations_public_router)
     app.include_router(conversations_staff_router)
     app.include_router(outcomes_router)

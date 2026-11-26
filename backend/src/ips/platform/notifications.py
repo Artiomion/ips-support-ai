@@ -20,12 +20,17 @@ from ips.platform.widget_api import token_hash
 
 
 class SMTPDeliveryError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
-def send_mail(settings: Settings, message: EmailMessage) -> None:
+def send_mail(
+    settings: Settings, message: EmailMessage, *, before_send: Callable[[], None] | None = None
+) -> None:
     address = (settings.smtp_host, settings.smtp_port)
     timeout = settings.smtp_timeout_seconds
+    submitting = accepted = False
     try:
         if settings.smtp_tls == "implicit":
             smtp = smtplib.SMTP_SSL(*address, timeout=timeout, context=ssl.create_default_context())
@@ -36,10 +41,21 @@ def send_mail(settings: Settings, message: EmailMessage) -> None:
                 smtp.starttls(context=ssl.create_default_context())
             if settings.smtp_username:
                 smtp.login(settings.smtp_username, settings.smtp_password.get_secret_value())
+            if before_send is not None:
+                before_send()
+            submitting = True
             smtp.send_message(message)
-    except (OSError, smtplib.SMTPException):
+            accepted = True
+    except (OSError, smtplib.SMTPException) as exc:
+        if accepted:
+            return  # QUIT may fail after DATA was accepted.
         # SMTP replies may contain addresses, message content, or credentials.
-        raise SMTPDeliveryError("SMTP delivery failed") from None
+        refused = isinstance(
+            exc, (smtplib.SMTPSenderRefused, smtplib.SMTPRecipientsRefused, smtplib.SMTPDataError)
+        )
+        raise SMTPDeliveryError(
+            "SMTP delivery failed", retryable=not submitting or refused
+        ) from None
 
 
 def mail_message(settings: Settings, recipient: str, subject: str, body: str) -> EmailMessage:
@@ -202,12 +218,12 @@ def notification_handlers(
 def main() -> None:
     from sqlalchemy import create_engine
 
-    from ips.core.jobs import drain_once
+    from ips.core.worker import Worker, mail_handlers
 
     settings = Settings()
     engine = create_engine(settings.database_url)
     try:
-        drain_once(engine, notification_handlers(engine, settings))
+        Worker(engine, mail_handlers(engine, settings)).run_once(raise_on_error=True)
     finally:
         engine.dispose()
 
