@@ -3,9 +3,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../../../../packages/api-client/src/client";
 import { SupportActions, type SupportApi } from "./SupportActions";
 const ticket = { id: "t1", conversation_id: "c1", status: "waiting_specialist", priority: "normal", category_id: null, assignee_id: null, version: 1, created_at: "2026-11-16T12:00:00Z", updated_at: "2026-11-16T12:00:00Z" } as const;
-function makeApi(): SupportApi { return { handoff: vi.fn().mockResolvedValue(ticket), ticket: vi.fn().mockResolvedValue(ticket), confirm: vi.fn(), reopen: vi.fn(), rate: vi.fn(), confirmAi: vi.fn(), email: vi.fn() }; }
+function makeApi(): SupportApi { return { conversationTicket: vi.fn().mockResolvedValue(null), handoff: vi.fn().mockResolvedValue(ticket), ticket: vi.fn().mockResolvedValue(ticket), confirm: vi.fn(), reopen: vi.fn(), rate: vi.fn(), confirmAi: vi.fn(), email: vi.fn() }; }
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 describe("customer support actions", () => {
+  it("restores a resolved ticket without creating another handoff", async () => {
+    const api = makeApi(); const onTicket = vi.fn();
+    vi.mocked(api.conversationTicket).mockResolvedValue({ ...ticket, status: "resolved" });
+    render(<SupportActions api={api} conversationId="c1" open restore ticketId={null} onTicket={onTicket} />);
+    expect(await screen.findByRole("button", { name: "Подтвердить решение" })).toBeTruthy();
+    expect(onTicket).toHaveBeenCalledWith("t1");
+    expect(api.handoff).not.toHaveBeenCalled();
+  });
+  it("retries a failed recovery without creating a ticket", async () => {
+    const api = makeApi(); const onTicket = vi.fn();
+    vi.mocked(api.conversationTicket).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(ticket);
+    render(<SupportActions api={api} conversationId="c1" open restore ticketId={null} onTicket={onTicket} />);
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Позвать специалиста" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Повторить проверку заявки" }));
+    expect(await screen.findByText(/Ожидаем специалиста/)).toBeTruthy();
+    expect(api.handoff).not.toHaveBeenCalled();
+  });
   it("does not apply a handoff after its conversation view was removed", async () => {
     const api = makeApi(); const onTicket = vi.fn(); let resolve!: (value: typeof ticket) => void;
     vi.mocked(api.handoff).mockImplementation(() => new Promise((done) => { resolve = done; }));

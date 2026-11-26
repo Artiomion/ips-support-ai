@@ -7,16 +7,30 @@ export type SupportApi = {
   confirm: (ticketId: string) => Promise<Ticket>; reopen: (ticketId: string) => Promise<Ticket>;
   rate: (ticketId: string, score: number) => Promise<void>; confirmAi: (conversationId: string) => Promise<void>;
   email: (conversationId: string, email: string) => Promise<void>;
+  conversationTicket: (conversationId: string) => Promise<Ticket | null>;
 };
-export function SupportActions({ api, conversationId, open, ticketId, onTicket, botMode = true, onAiConfirmed }: { api: SupportApi; conversationId: string; open: boolean; ticketId: string | null; onTicket: (id: string | null) => void; botMode?: boolean; onAiConfirmed?: () => void }) {
+export function SupportActions({ api, conversationId, open, ticketId, onTicket, botMode = true, onAiConfirmed, restore = false }: { api: SupportApi; conversationId: string; open: boolean; ticketId: string | null; onTicket: (id: string | null) => void; botMode?: boolean; onAiConfirmed?: () => void; restore?: boolean }) {
   const [ticket, setTicket] = useState<Ticket | null>(null); const [busy, setBusy] = useState(false); const busyRef = useRef(false);
   const [error, setError] = useState(""); const [pollError, setPollError] = useState(""); const [notice, setNotice] = useState(""); const [email, setEmail] = useState(""); const [score, setScore] = useState("");
   const generation = useRef(0); const [rated, setRated] = useState(false); const [aiConfirmed, setAiConfirmed] = useState(false);
+  const [recovery, setRecovery] = useState<"loading" | "ready" | "error">(restore ? "loading" : "ready"); const [recoveryAttempt, setRecoveryAttempt] = useState(0);
   const currentConversation = useRef(conversationId); currentConversation.current = conversationId;
   useEffect(() => {
     setTicket(null); setError(""); setPollError(""); setNotice(""); setEmail(""); setScore(""); setRated(false); setAiConfirmed(false); generation.current++;
     return () => { generation.current++; };
   }, [conversationId]);
+  useEffect(() => {
+    if (!restore || !open || ticketId) return;
+    let active = true;
+    setRecovery("loading");
+    void api.conversationTicket(conversationId).then((value) => {
+      if (!active) return;
+      if (value && value.conversation_id !== conversationId) throw new Error("Conversation mismatch");
+      if (value) { setTicket(value); onTicket(value.id); }
+      setPollError(""); setRecovery("ready");
+    }).catch(() => { if (active) setRecovery("error"); });
+    return () => { active = false; };
+  }, [api, open, ticketId, conversationId, recoveryAttempt, restore]);
   useEffect(() => {
     if (!open || !ticketId) return;
     const activeTicketId = ticketId;
@@ -46,7 +60,9 @@ export function SupportActions({ api, conversationId, open, ticketId, onTicket, 
   const change = (operation: (id: string) => Promise<Ticket>) => run(async (isCurrent) => { if (ticket) { const value = await operation(ticket.id); if (value.conversation_id !== conversationId) throw new Error("Conversation mismatch"); if (isCurrent()) setTicket(value); } });
   return <section aria-label="Действия с обращением"><h2>Помощь специалиста</h2>
     {error && <p role="alert">{error}</p>}{pollError && <p role="alert">{pollError}</p>}{notice && <p role="status">{notice}</p>}
-    {!ticketId && <button type="button" disabled={busy} onClick={() => { void handoff(); }}>Позвать специалиста</button>}
+    {!ticketId && recovery === "loading" && <p role="status">Проверяем состояние заявки…</p>}
+    {!ticketId && recovery === "error" && <><p role="alert">Не удалось восстановить состояние заявки.</p><button type="button" onClick={() => setRecoveryAttempt((value) => value + 1)}>Повторить проверку заявки</button></>}
+    {!ticketId && recovery === "ready" && <button type="button" disabled={busy} onClick={() => { void handoff(); }}>Позвать специалиста</button>}
     {ticketId && !ticket && <p role="status">Загружаем состояние заявки…</p>}
     {ticket && <><p role="status">{{ new: "Заявка создана", waiting_specialist: "Ожидаем специалиста", in_progress: "Специалист работает над обращением", waiting_customer: "Специалист ожидает вашего ответа", resolved: "Специалист отметил обращение решённым. Подтвердите или откройте его снова.", closed: "Обращение закрыто" }[ticket.status]}</p>
       {ticket.status === "resolved" && <><button type="button" disabled={busy} onClick={() => { void change(api.confirm); }}>Подтвердить решение</button><button type="button" disabled={busy} onClick={() => { void change(api.reopen); }}>Проблема не решена</button></>}

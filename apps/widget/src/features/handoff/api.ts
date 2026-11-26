@@ -6,6 +6,7 @@ type Client = ReturnType<typeof createApiClient>;
 function required<T>(value: T | undefined): T { if (value === undefined) throw new Error("Пустой ответ"); return value; }
 export function createSupportApi(client: Client): SupportApi {
   return {
+    async conversationTicket(conversationId) { return required((await client.get("/api/v1/public/conversations/{conversation_id}/ticket", { params: { path: { conversation_id: conversationId } } })).data).ticket; },
     async handoff(conversationId) { return required((await client.post("/api/v1/public/conversations/{conversation_id}/handoff", { params: { path: { conversation_id: conversationId } }, body: { reason: "Клиент запросил специалиста" } })).data); },
     async ticket(ticketId) { return required((await client.get("/api/v1/public/tickets/{ticket_id}", { params: { path: { ticket_id: ticketId } } })).data); },
     async confirm(ticketId) { return required((await client.post("/api/v1/public/tickets/{ticket_id}/confirm", { params: { path: { ticket_id: ticketId } } })).data); },
