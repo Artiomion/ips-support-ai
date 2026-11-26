@@ -42,4 +42,33 @@ jobs:
       - run: uv run --frozen ty check src
       - run: uv run --frozen alembic upgrade head
       - run: uv run --frozen pytest -q
+        env:
+          IPS_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
       - run: uv run --frozen python -m ips.core.export_openapi --check ../contracts/openapi.json
+
+  stack-smoke:
+    runs-on: ubuntu-latest
+    env:
+      COMPOSE_PROJECT_NAME: ips-ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Start the demo
+        run: docker compose -f infra/compose.yaml up -d --build --wait --wait-timeout 90
+      - name: Check API, web, widget and Mailpit
+        run: |
+          curl --fail --silent --show-error http://localhost:8000/health/ready
+          curl --fail --silent --show-error http://localhost:5173/invite -o /dev/null
+          curl --fail --silent --show-error http://localhost:5174/loader.js -o /dev/null
+          curl --fail --silent --show-error http://localhost:8025/ -o /dev/null
+      - name: Seed both demo organizations
+        env:
+          IPS_DEMO_PASSWORD: ci-only-synthetic-demo-password
+        run: |
+          docker compose -f infra/compose.yaml run --rm --no-deps -e IPS_DEMO_PASSWORD api \
+            python tests/integration/demo_seed.py
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose -f infra/compose.yaml logs --no-color
+      - name: Remove the CI stack
+        if: always()
+        run: docker compose -f infra/compose.yaml down --volumes

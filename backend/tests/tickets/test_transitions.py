@@ -64,6 +64,8 @@ def context():
     yield engine, principal, fake
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM tickets WHERE tenant_id=:tenant"), {"tenant": tenant})
+        conn.execute(text("DELETE FROM ai_runs WHERE tenant_id=:tenant"), {"tenant": tenant})
+        conn.execute(text("DELETE FROM messages WHERE tenant_id=:tenant"), {"tenant": tenant})
         conn.execute(text("DELETE FROM conversations WHERE tenant_id=:tenant"), {"tenant": tenant})
         conn.execute(text("DELETE FROM customers WHERE tenant_id=:tenant"), {"tenant": tenant})
         conn.execute(text("DELETE FROM widgets WHERE tenant_id=:tenant"), {"tenant": tenant})
@@ -337,6 +339,99 @@ def test_staff_list_ticket_paginates_and_filters_by_tenant(context):
         assert client.get("/api/v1/tickets").json()["items"] == []
 
 
+def test_staff_ticket_search_and_widget_filters_preserve_tenant_and_privacy(context):
+    from fastapi.testclient import TestClient
+
+    from ips.conversations.repository import ConversationRepository
+    from ips.core.ports import TenantContext
+    from ips.main import create_app
+    from ips.platform.auth import tenant_context
+
+    engine, principal, fake = context
+    app = create_app(Settings())
+    staff = TenantContext(
+        tenant_id=principal.tenant_id, user_id=uuid4(), membership_id=uuid4(), role="admin"
+    )
+    app.dependency_overrides[tenant_context] = lambda: staff
+    repo = ConversationRepository()
+    other_widget = principal.model_copy(update={"widget_id": uuid4()})
+    foreign = CustomerPrincipal(tenant_id=uuid4(), widget_id=uuid4(), customer_id=uuid4())
+
+    def add_message(db, owner, conversation, kind, message):
+        repo.append_message(db, owner.tenant_id, conversation, kind, message, uuid4())
+
+    def handoff(db, owner, conversation):
+        return app.state.ports.tickets.escalate(
+            db, owner, conversation, "Question", None, "normal"
+        ).id
+
+    with Session(engine) as db, db.begin():
+        db.execute(
+            text("INSERT INTO organizations (id,name) VALUES (:id,'other')"),
+            {"id": foreign.tenant_id},
+        )
+        db.execute(
+            text("INSERT INTO customers (id,tenant_id) VALUES (:id,:tenant)"),
+            {"id": foreign.customer_id, "tenant": foreign.tenant_id},
+        )
+        for owner in (other_widget, foreign):
+            db.execute(
+                text("""INSERT INTO widgets (id,tenant_id,name,public_key,color,greeting,allowed_origins)
+                VALUES (:id,:tenant,'other',:key,'#123456','hello',ARRAY[]::text[])"""),
+                {"id": owner.widget_id, "tenant": owner.tenant_id, "key": str(uuid4())},
+            )
+        first = fake.state.id
+        second = repo.create(db, other_widget)["id"]
+        unrelated = repo.create(db, principal)["id"]
+        foreign_conversation = repo.create(db, foreign)["id"]
+        add_message(db, principal, first, "customer", "Coupon 50%_")
+        add_message(db, principal, first, "specialist", "Coupon 50%_ confirmed")
+        add_message(db, principal, first, "internal_note", "Private-only marker")
+        add_message(db, other_widget, second, "assistant", "Coupon 50%_ available")
+        add_message(db, principal, unrelated, "customer", "Coupon 50AB")
+        add_message(db, foreign, foreign_conversation, "customer", "Coupon 50%_")
+        first_ticket = str(handoff(db, principal, first))
+        second_ticket = str(handoff(db, other_widget, second))
+        unrelated_ticket = str(handoff(db, principal, unrelated))
+        handoff(db, foreign, foreign_conversation)
+
+    try:
+        with TestClient(app) as client:
+
+            def fetch(**params):
+                response = client.get("/api/v1/tickets", params=params)
+                assert response.status_code == 200, response.text
+                page = response.json()
+                return [item["id"] for item in page["items"]], page["next_cursor"]
+
+            query = "  coupon 50%_  "
+            first_page, cursor = fetch(q=query, limit=1)
+            assert cursor is not None
+            second_page, end = fetch(q=query, limit=1, cursor=cursor)
+            assert first_page + second_page == sorted([first_ticket, second_ticket])
+            assert end is None
+            assert fetch(q=query, widget_id=str(principal.widget_id))[0] == [first_ticket]
+            assert fetch(q=query, widget_id=str(other_widget.widget_id))[0] == [second_ticket]
+            assert fetch(q=query, widget_id=str(foreign.widget_id))[0] == []
+            assert fetch(q=query, status="closed")[0] == []
+            assert fetch(widget_id=str(principal.widget_id))[0] == sorted(
+                [first_ticket, unrelated_ticket]
+            )
+            assert fetch(q="private-only marker")[0] == []
+            assert client.get("/api/v1/tickets", params={"q": "\x00"}).status_code == 422
+    finally:
+        with engine.begin() as conn:
+            for table in ("tickets", "messages", "conversations", "customers", "widgets"):
+                conn.execute(
+                    text(f"DELETE FROM {table} WHERE tenant_id=:tenant"),
+                    {"tenant": foreign.tenant_id},
+                )
+            conn.execute(
+                text("DELETE FROM organizations WHERE id=:tenant"),
+                {"tenant": foreign.tenant_id},
+            )
+
+
 def test_staff_update_status_requires_csrf_and_rejects_stale_version(context):
     from fastapi.testclient import TestClient
 
@@ -573,3 +668,130 @@ def test_concurrent_ticket_updates_do_not_overwrite_each_other(context):
     with ThreadPoolExecutor(max_workers=2) as pool:
         outcomes = list(pool.map(update, ["high", "urgent"]))
     assert sorted(outcomes) == [2, 409]
+
+
+def test_real_conversation_handoff_and_customer_message_preserve_ticket_invariants(context):
+    from fastapi.testclient import TestClient
+
+    from ips.core.ports import TenantContext
+    from ips.main import create_app
+    from ips.platform.auth import require_csrf, tenant_context
+    from ips.platform.widget_api import customer_principal
+
+    engine, principal, fake = context
+    app = create_app(Settings())
+    app.dependency_overrides[customer_principal] = lambda: principal
+    admin = TenantContext(
+        tenant_id=principal.tenant_id, user_id=uuid4(), membership_id=uuid4(), role="admin"
+    )
+    app.dependency_overrides[tenant_context] = lambda: admin
+    app.dependency_overrides[require_csrf] = lambda: None
+    conversation_id = fake.state.id
+    handoff_path = f"/api/v1/public/conversations/{conversation_id}/handoff"
+    message_path = f"/api/v1/public/conversations/{conversation_id}/messages"
+    with TestClient(app) as client:
+        first = client.post(handoff_path, json={"reason": "Help"})
+        assert first.status_code == 200, first.text
+        ticket = first.json()
+        repeated = client.post(handoff_path, json={"reason": "Help again"})
+        assert repeated.status_code == 200 and repeated.json()["id"] == ticket["id"]
+        app.dependency_overrides[customer_principal] = lambda: principal.model_copy(
+            update={"customer_id": uuid4()}
+        )
+        assert client.post(handoff_path, json={"reason": "Help"}).status_code == 404
+        app.dependency_overrides[customer_principal] = lambda: principal
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE tickets SET status='waiting_customer' WHERE id=:id"),
+                {"id": ticket["id"]},
+            )
+        message = {"client_message_id": str(uuid4()), "text": "More details"}
+        assert client.post(message_path, json=message).status_code == 201
+        assert client.post(message_path, json=message).status_code == 200
+        with engine.begin() as conn:
+            row = conn.execute(
+                text("SELECT status, version FROM tickets WHERE id=:id"), {"id": ticket["id"]}
+            ).one()
+            assert row.status == "in_progress" and row.version == ticket["version"] + 1
+            assert (
+                conn.execute(
+                    text("SELECT mode FROM conversations WHERE id=:id"), {"id": conversation_id}
+                ).scalar_one()
+                == "human"
+            )
+        staff_ticket = f"/api/v1/tickets/{ticket['id']}"
+        customer_ticket = f"/api/v1/public/tickets/{ticket['id']}"
+        resolved = client.put(
+            staff_ticket, json={"expected_version": row.version, "status": "resolved"}
+        )
+        assert resolved.status_code == 200, resolved.text
+        assert client.get(customer_ticket).json()["status"] == "resolved"
+        reopened = client.post(customer_ticket + "/reopen")
+        assert reopened.status_code == 200 and reopened.json()["status"] == "in_progress"
+        assert client.post(customer_ticket + "/confirm").status_code == 409
+        resolved = client.put(
+            staff_ticket,
+            json={"expected_version": reopened.json()["version"], "status": "resolved"},
+        )
+        assert resolved.status_code == 200, resolved.text
+        confirmed = client.post(customer_ticket + "/confirm")
+        assert confirmed.status_code == 200 and confirmed.json()["status"] == "closed"
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT outcome FROM conversations WHERE id=:id"), {"id": conversation_id}
+                ).scalar_one()
+                == "human_confirmed"
+            )
+        new_ticket = client.post(handoff_path, json={"reason": "New question"})
+        assert new_ticket.status_code == 200 and new_ticket.json()["id"] != ticket["id"]
+
+
+def test_real_reopen_races_handoff_without_creating_two_active_tickets(context):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from ips.core.composition import default_ports
+
+    engine, principal, fake = context
+    conversation_id = fake.state.id
+    service = default_ports().tickets
+    with Session(engine) as db, db.begin():
+        original = service.escalate(db, principal, conversation_id, "Help", None, "normal")
+        db.execute(text("UPDATE tickets SET status='resolved' WHERE id=:id"), {"id": original.id})
+    start = Barrier(2, timeout=5)
+
+    def run(operation):
+        with Session(engine) as db:
+            start.wait()
+            try:
+                result = (
+                    service.reopen(db, principal, original.id)
+                    if operation == "reopen"
+                    else service.escalate(
+                        db, principal, conversation_id, "Help again", None, "normal"
+                    )
+                )
+                db.commit()
+                return result.id
+            except HTTPException as error:
+                db.rollback()
+                assert error.status_code == 409
+                return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(run, ("reopen", "handoff")))
+    with engine.connect() as conn:
+        active = (
+            conn.execute(
+                text(
+                    "SELECT id FROM tickets WHERE tenant_id=:tenant AND conversation_id=:id AND status NOT IN ('resolved','closed')"
+                ),
+                {"tenant": principal.tenant_id, "id": conversation_id},
+            )
+            .scalars()
+            .all()
+        )
+    assert len(active) == 1
+    assert outcomes[1] == active[0]
+    assert outcomes[0] is None or outcomes[0] == active[0]
