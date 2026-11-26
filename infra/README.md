@@ -1,35 +1,32 @@
-# Инфраструктура: B
+# Локальный стенд
 
-Compose запускает PostgreSQL 17 и Mailpit. В B08 добавятся API и статические
-web/widget; worker того же приложения появится в B09.
-В ядре B07 persisted jobs для писем могут исполняться простой командой
-одноразового drain; B09 добавляет постоянный worker с lease/retry.
-Каждый этап обязан уметь показать отправленное письмо в sandbox.
+Из корня проекта запустите API, панель, виджет, PostgreSQL 17 и Mailpit.
+API применяет миграции Alembic перед запуском.
 
-Не добавлять secrets и реальные переписки. Обновление схемы — Alembic,
-не create_all на старте сервера. Проверка восстановления backup в B08.
+```sh
+docker compose -p ips-demo -f infra/compose.yaml up -d --build --wait
+```
 
-Из корня репозитория запустите `docker compose -f infra/compose.yaml up -d --wait`.
-Из каталога `backend` выполните `uv sync --frozen`, `uv run alembic upgrade head`
-и `uv run uvicorn ips.main:app --reload`. Проверки: `/health/live` и
-`/health/ready` на `http://localhost:8000`. Для локальных данных используется
-Docker volume; остановка `docker compose -f infra/compose.yaml stop` его не удаляет.
+| Сервис | Адрес |
+|---|---|
+| Панель | http://localhost:5173 |
+| Виджет и `loader.js` | http://localhost:5174 |
+| Готовность API | http://localhost:8000/health/ready |
+| Почтовая песочница | http://localhost:8025 |
 
-Для входа персонала `WEB_ORIGIN` должен точно совпадать с origin панели.
-Переменная `SESSION_SECRET` используется для CSRF-токенов; задавайте случайное
-значение отдельно в каждом окружении, не добавляя его в Git. В `production`
-нужны `COOKIE_SECURE=true` и отдельный секрет длиной не менее 32 символов.
+По умолчанию включён демонстрационный ИИ. Адреса панели и виджета должны
+совпадать с настройками CORS. При открытии стенда используйте `localhost`.
+Данные PostgreSQL остаются в Docker volume между запусками.
 
-Для локальных приглашений Mailpit показывает письма на `http://localhost:8025`,
-SMTP принимает сообщения на `localhost:1025`. Обработать одно задание очереди
-можно из каталога `backend`: `uv run python -m ips.platform.notifications`.
-Mailpit предназначен для разработки и CI. Для защиты обязательна внешняя
-почта: B07 добавляет SMTP-аутентификацию и TLS, затем команда проверяет
-доставку на настоящий адрес по `docs/demo-live-services.md`.
+Для разработки с локальным API поднимите только сервисы данных.
 
-Фоновый обработчик ответов ИИ для локальной демонстрации выключен по умолчанию.
-Чтобы включить его, задайте `AI_RUNNER_ENABLED=true` и `AI_PROVIDER=fake` при
-запуске API. Используется только демонстрационная заглушка, не настоящий ИИ.
-До подключения лимитов B06 демо-обработчик не ограничивает расход по квоте;
-после интеграции он использует квоту, переданную через состав приложения.
-Реальный провайдер и проверка безопасности ответов подключаются отдельно.
+```sh
+docker compose -p ips-demo -f infra/compose.yaml up -d --wait postgres mailpit
+cd backend
+uv sync --frozen
+uv run alembic upgrade head
+uv run uvicorn ips.main:app --reload
+```
+
+Команды для заполнения базы, сброса, локальной отправки письма и проверки
+резервной копии приведены в [инструкции для команды](../docs/runbook.md).

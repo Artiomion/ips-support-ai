@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: ips
       POSTGRES_DB: ips
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${IPS_POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -17,7 +17,64 @@ services:
   mailpit:
     image: axllent/mailpit:v1.33.1
     ports:
-      - "127.0.0.1:1025:1025"
-      - "127.0.0.1:8025:8025"
+      - "127.0.0.1:${IPS_MAIL_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${IPS_MAIL_UI_PORT:-8025}:8025"
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+      target: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://ips:ips@postgres:5432/ips
+      APP_ENV: ${APP_ENV:-development}
+      SESSION_SECRET: ${SESSION_SECRET:-development-only-change-me-before-production}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:${IPS_WEB_PORT:-5173}}
+      WIDGET_ORIGIN: ${WIDGET_ORIGIN:-http://localhost:${IPS_WIDGET_PORT:-5174}}
+      AI_PROVIDER: ${AI_PROVIDER:-fake}
+      AI_RUNNER_ENABLED: ${AI_RUNNER_ENABLED:-true}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_FROM: ${SMTP_FROM:-support@example.invalid}
+      SMTP_TLS: ${SMTP_TLS:-none}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-10}
+    ports:
+      - "127.0.0.1:${IPS_API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health/ready', timeout=2).close()"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+      target: web
+      args:
+        API_ORIGIN: ${API_ORIGIN:-http://localhost:${IPS_API_PORT:-8000}}
+        WIDGET_ORIGIN: ${WIDGET_ORIGIN:-http://localhost:${IPS_WIDGET_PORT:-5174}}
+    ports:
+      - "127.0.0.1:${IPS_WEB_PORT:-5173}:80"
+
+  widget:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+      target: widget
+      args:
+        API_ORIGIN: ${API_ORIGIN:-http://localhost:${IPS_API_PORT:-8000}}
+        WIDGET_ORIGIN: ${WIDGET_ORIGIN:-http://localhost:${IPS_WIDGET_PORT:-5174}}
+    ports:
+      - "127.0.0.1:${IPS_WIDGET_PORT:-5174}:80"
+
 volumes:
   postgres_data:
