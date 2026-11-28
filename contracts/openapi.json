@@ -4122,6 +4122,68 @@
         "x-task": "B04"
       }
     },
+    "/api/v1/public/conversations/{conversation_id}/ticket": {
+      "get": {
+        "operationId": "getConversationTicket",
+        "tags": [
+          "B"
+        ],
+        "x-owner": "B",
+        "x-phase": "M4",
+        "summary": "getConversationTicket",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationTicket"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "403": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "409": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "422": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "429": {
+            "$ref": "#/components/responses/ErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ErrorResponse"
+          }
+        },
+        "security": [
+          {
+            "customerBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "x-task": "B04",
+        "description": "Read the current ticket for an owned conversation. Select an active ticket first, then the most recent resolved or closed ticket by lifecycle time. For an owned conversation without tickets, return ticket: null. Use the authenticated customer, widget and organization and enforce conversation scope. Reading never creates or reopens a ticket."
+      }
+    },
     "/api/v1/capabilities": {
       "get": {
         "operationId": "getStaffCapabilities",
@@ -5581,6 +5643,25 @@
           "version",
           "created_at",
           "updated_at"
+        ]
+      },
+      "ConversationTicket": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ticket": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TicketSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ticket"
         ]
       },
       "TicketUpdate": {

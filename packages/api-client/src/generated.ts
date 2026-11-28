@@ -847,6 +847,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/public/conversations/{conversation_id}/ticket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * getConversationTicket
+         * @description Read the current ticket for an owned conversation. Select an active ticket first, then the most recent resolved or closed ticket by lifecycle time. For an owned conversation without tickets, return ticket: null. Use the authenticated customer, widget and organization and enforce conversation scope. Reading never creates or reopens a ticket.
+         */
+        get: operations["getConversationTicket"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/capabilities": {
         parameters: {
             query?: never;
@@ -1177,6 +1197,9 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        ConversationTicket: {
+            ticket: components["schemas"]["TicketSummary"] | null;
         };
         TicketUpdate: {
             expected_version: number;
@@ -3406,6 +3429,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TicketSummary"];
+                };
+            };
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+            429: components["responses"]["ErrorResponse"];
+            503: components["responses"]["ErrorResponse"];
+        };
+    };
+    getConversationTicket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationTicket"];
                 };
             };
             401: components["responses"]["ErrorResponse"];
