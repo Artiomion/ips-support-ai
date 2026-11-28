@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { Knowledge, type KnowledgeApi } from "./Knowledge";
 
@@ -9,7 +9,9 @@ it("reports import progress and server processing errors", async () => {
   await screen.findAllByRole("option", { name: "Общее" });
   fireEvent.change(screen.getByLabelText("TXT-файл"), { target: { files: [new File(["text"], "help.txt", { type: "text/plain" })] } });
   fireEvent.change(screen.getByLabelText("Раздел импорта"), { target: { value: "s1" } });
-  fireEvent.submit(screen.getByRole("button", { name: "Загрузить TXT" }).closest("form")!);
-  expect(await screen.findByText(/обрабатывается/)).toBeTruthy();
-  expect(await screen.findByText(/ошибка.*invalid_text/, {}, { timeout: 5000 })).toBeTruthy();
+  vi.useFakeTimers();
+  await act(async () => { fireEvent.submit(screen.getByRole("button", { name: "Загрузить TXT" }).closest("form")!); });
+  expect(screen.getByText(/обрабатывается/)).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(screen.getByText(/ошибка.*invalid_text/)).toBeTruthy();
 });
