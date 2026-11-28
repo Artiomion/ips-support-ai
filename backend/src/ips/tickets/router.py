@@ -3,7 +3,7 @@
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, field_validator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -32,6 +32,11 @@ class HandoffInput(BaseModel):
 
 class TicketResponse(TicketSummary):
     version: int = Field(ge=1)
+
+
+class ConversationTicket(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ticket: TicketResponse | None
 
 
 class TicketPage(BaseModel):
@@ -218,6 +223,49 @@ def get_customer_ticket(
 ) -> TicketSummary:
     row, _ = service_for(request)._customer_ticket(db, principal, ticket_id)
     return TicketSummary.model_validate({key: row[key] for key in TicketSummary.model_fields})
+
+
+@router.get("/conversations/{conversation_id}/ticket", operation_id="getConversationTicket")
+def get_conversation_ticket(
+    conversation_id: UUID,
+    response: Response,
+    principal: Annotated[CustomerPrincipal, Depends(customer_principal)],
+    db: Annotated[Session, Depends(get_session)],
+) -> ConversationTicket:
+    if principal.conversation_scope not in (None, conversation_id):
+        raise HTTPException(404, "Conversation unavailable")
+    row = (
+        db.execute(
+            text("""SELECT ticket.* FROM conversations c
+            LEFT JOIN LATERAL (
+                SELECT t.* FROM tickets t
+                WHERE t.tenant_id=c.tenant_id AND t.conversation_id=c.id
+                ORDER BY (t.status IN ('resolved', 'closed')),
+                    coalesce(t.closed_at,t.resolved_at,t.created_at) DESC,
+                    t.created_at DESC, t.id DESC
+                LIMIT 1
+            ) ticket ON true
+            WHERE c.id=:id AND c.tenant_id=:tenant
+                AND c.customer_id=:customer AND c.widget_id=:widget"""),
+            {
+                "id": conversation_id,
+                "tenant": principal.tenant_id,
+                "customer": principal.customer_id,
+                "widget": principal.widget_id,
+            },
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        raise HTTPException(404, "Conversation unavailable")
+    response.headers["Cache-Control"] = "no-store"
+    ticket = (
+        TicketResponse.model_validate({key: row[key] for key in TicketResponse.model_fields})
+        if row["id"] is not None
+        else None
+    )
+    return ConversationTicket(ticket=ticket)
 
 
 @router.post(

@@ -107,6 +107,14 @@ def test_email_confirmation_and_reply_link_each_grant_only_one_conversation(scen
     )
     assert preflight.status_code == 200
     assert "access-control-allow-credentials" not in preflight.headers
+    ticket_path = f"/api/v1/public/conversations/{first}/ticket"
+    handoff = client.post(
+        f"/api/v1/public/conversations/{first}/handoff",
+        headers=customer,
+        json={"reason": "Help"},
+    )
+    assert handoff.status_code == 200
+    existing_ticket = handoff.json()
     send_staff_message(client, staff, first)
     queued = email_request(client, customer, first, recipient)
     assert queued.status_code == 202 and queued.json() == {"state": "queued"}
@@ -172,11 +180,103 @@ def test_email_confirmation_and_reply_link_each_grant_only_one_conversation(scen
     success = next(response for response in responses if response.status_code == 200)
     assert success.json()["conversation_id"] == first
     scoped = bearer(success.json()["access_token"], settings.widget_origin)
+    with TestClient(app) as new_browser:
+        restored = new_browser.get(ticket_path, headers=scoped)
+        assert restored.status_code == 200
+        assert restored.json()["ticket"]["id"] == existing_ticket["id"]
+        assert restored.json()["ticket"]["status"] == existing_ticket["status"]
+        assert restored.headers["cache-control"] == "no-store"
+        assert (
+            new_browser.get(
+                f"/api/v1/public/conversations/{second}/ticket", headers=scoped
+            ).status_code
+            == 404
+        )
     assert (
         client.get(f"/api/v1/public/conversations/{second}/messages", headers=scoped).status_code
         == 404
     )
     assert client.post(exchange, headers=origin, json=payload).status_code == 404
+
+
+def test_conversation_ticket_is_a_scoped_read_of_the_current_lifecycle(scenario):
+    app, client, _, widget_id, customer, first, _ = scenario
+    path = f"/api/v1/public/conversations/{first}/ticket"
+    assert client.get(path).status_code == 401
+    empty = client.get(path, headers=customer)
+    assert empty.status_code == 200 and empty.json() == {"ticket": None}
+    origin = app.state.settings.widget_origin
+    preflight = {
+        "Origin": origin,
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "Authorization",
+    }
+    allowed = client.options(path, headers=preflight)
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == origin
+    assert "access-control-allow-credentials" not in allowed.headers
+    assert (
+        client.options(path, headers={**preflight, "Origin": "https://shop.example"}).status_code
+        == 403
+    )
+
+    with app.state.engine.connect() as conn:
+        assert (
+            conn.scalar(
+                text("SELECT count(*) FROM tickets WHERE conversation_id=:id"), {"id": first}
+            )
+            == 0
+        )
+        public_key = conn.scalar(
+            text("SELECT public_key FROM widgets WHERE id=:id"), {"id": widget_id}
+        )
+    new_session = client.post(
+        f"/api/v1/public/widgets/{public_key}/sessions",
+        headers={"Origin": "https://shop.example"},
+        json={},
+    )
+    assert new_session.status_code == 201
+    other_customer = bearer(new_session.json()["access_token"], origin)
+    foreign = client.get(path, headers=other_customer)
+    unknown = client.get(f"/api/v1/public/conversations/{uuid4()}/ticket", headers=other_customer)
+    assert foreign.status_code == unknown.status_code == 404
+    assert foreign.json()["error"]["code"] == unknown.json()["error"]["code"]
+
+    handoff_path = f"/api/v1/public/conversations/{first}/handoff"
+    handoff = client.post(handoff_path, headers=customer, json={"reason": "Help"})
+    assert handoff.status_code == 200
+    older = handoff.json()["id"]
+    # Use a real resolved ticket and the existing customer confirmation endpoint.
+    with app.state.engine.begin() as conn:
+        conn.execute(
+            text("UPDATE tickets SET status='resolved',resolved_at=now() WHERE id=:id"),
+            {"id": older},
+        )
+    resolved = client.get(path, headers=customer).json()["ticket"]
+    assert (resolved["id"], resolved["status"]) == (older, "resolved")
+    assert (
+        client.post(f"/api/v1/public/tickets/{older}/confirm", headers=customer).status_code == 200
+    )
+    assert client.get(path, headers=customer).json()["ticket"]["status"] == "closed"
+
+    another = client.post(handoff_path, headers=customer, json={"reason": "Another request"})
+    assert another.status_code == 200
+    latest = another.json()["id"]
+    assert latest != older
+    with app.state.engine.begin() as conn:
+        conn.execute(
+            text("UPDATE tickets SET created_at=now()-interval '1 day' WHERE id=:id"),
+            {"id": latest},
+        )
+    assert client.get(path, headers=customer).json()["ticket"]["id"] == latest
+    with app.state.engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE tickets SET status='resolved',resolved_at=now()+interval '1 second' WHERE id=:id"
+            ),
+            {"id": latest},
+        )
+    assert client.get(path, headers=customer).json()["ticket"]["id"] == latest
 
 
 def test_expired_confirmation_has_same_error_as_unknown_token(scenario):

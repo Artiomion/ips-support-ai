@@ -13,7 +13,8 @@ from ips.platform.widgets import normalize_origin
 
 WIDGET_SESSION = re.compile(r"^/api/v1/public/widgets/([^/]+)/sessions$")
 TICKET_PATH = re.compile(
-    r"^/api/v1/public/(?:conversations/[^/]+/handoff|tickets/[^/]+(?:/confirm|/reopen|/rating)?)$"
+    r"^/api/v1/public/(?:conversations/[^/]+/(?:handoff|ticket)"
+    r"|tickets/[^/]+(?:/confirm|/reopen|/rating)?)$"
 )
 EMAIL_PATH = re.compile(r"^/api/v1/public/customer/(?:email/(?:request|confirm)|links/exchange)$")
 CONVERSATION_PATH = re.compile(
